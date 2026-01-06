@@ -1,0 +1,42 @@
+# 忽略构建输出
+zig-cache/
+.zig-cache/
+zig-out/
+*.o
+*.a
+*.so
+*.dll
+*.exe
+
+# 忽略依赖缓存
+.zigmod/
+deps.zig
+
+# 编辑器/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 数据文件（历史记录）
+data/
+
+# 原始C++项目文件（如果不需要）
+AppRead/
+Debug/
+Release/
+*.vcxproj
+*.vcxproj.*
+*.aps
+*.rc
+*.cpp
+*.h
+res/
