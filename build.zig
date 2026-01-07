@@ -1,5 +1,64 @@
 const std = @import("std");
 
+// 在 Windows 上自动搜索 vcpkg 安装目录
+fn findVcpkgRoot(b: *std.Build) ?[]const u8 {
+    // 尝试使用 PowerShell 查找 vcpkg.exe
+    const result = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &[_][]const u8{
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "Get-Command vcpkg -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source",
+        },
+    }) catch return null;
+
+    defer {
+        b.allocator.free(result.stdout);
+        b.allocator.free(result.stderr);
+    }
+
+    if (result.term.Exited != 0 or result.stdout.len == 0) {
+        // 尝试直接用 where 命令
+        const where_result = std.process.Child.run(.{
+            .allocator = b.allocator,
+            .argv = &[_][]const u8{ "where", "vcpkg" },
+        }) catch return null;
+
+        defer {
+            b.allocator.free(where_result.stdout);
+            b.allocator.free(where_result.stderr);
+        }
+
+        if (where_result.term.Exited != 0 or where_result.stdout.len == 0) {
+            return null;
+        }
+
+        // 从 vcpkg.exe 路径推断安装目录
+        const vcpkg_exe = std.mem.trim(u8, where_result.stdout, &std.ascii.whitespace);
+        return extractVcpkgRoot(b, vcpkg_exe);
+    }
+
+    const vcpkg_exe = std.mem.trim(u8, result.stdout, &std.ascii.whitespace);
+    return extractVcpkgRoot(b, vcpkg_exe);
+}
+
+fn extractVcpkgRoot(b: *std.Build, vcpkg_exe: []const u8) ?[]const u8 {
+    // vcpkg.exe 通常在 vcpkg 根目录
+    // installed 目录在 vcpkg/installed/x64-windows
+    if (std.mem.lastIndexOf(u8, vcpkg_exe, "\\")) |last_sep| {
+        const vcpkg_dir = vcpkg_exe[0..last_sep];
+        const installed_path = b.fmt("{s}\\installed\\x64-windows", .{vcpkg_dir});
+
+        // 验证路径存在
+        std.fs.cwd().access(installed_path, .{}) catch return null;
+
+        std.debug.print("✓ 自动找到 vcpkg: {s}\n", .{installed_path});
+        return installed_path;
+    }
+    return null;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -42,33 +101,40 @@ pub fn build(b: *std.Build) void {
             exe.linkSystemLibrary("hidapi-hidraw");
         },
         .windows => {
-            // Windows: 使用 vcpkg 安装的 hidapi
-            // 优先使用环境变量 VCPKG_ROOT，否则使用默认路径
-            const vcpkg_root = std.process.getEnvVarOwned(b.allocator, "VCPKG_ROOT") catch |err| blk: {
-                if (err == error.EnvironmentVariableNotFound) {
-                    // 默认路径（用户可以修改或设置环境变量）
-                    std.debug.print("警告: 未设置 VCPKG_ROOT 环境变量，使用默认路径\n", .{});
-                    std.debug.print("建议: 设置环境变量 VCPKG_ROOT 指向 vcpkg 安装目录\n", .{});
-                    break :blk "C:\\vcpkg\\installed\\x64-windows";
-                } else {
-                    std.debug.print("错误: 无法读取环境变量: {}\n", .{err});
-                    break :blk "C:\\vcpkg\\installed\\x64-windows";
-                }
-            };
-            defer if (std.mem.indexOf(u8, vcpkg_root, ":\\") == null) b.allocator.free(vcpkg_root);
+            // Windows: 自动搜索 vcpkg 安装目录
+            var vcpkg_root: []const u8 = "";
 
+            // 1. 尝试环境变量 VCPKG_ROOT
+            if (std.process.getEnvVarOwned(b.allocator, "VCPKG_ROOT")) |env_root| {
+                vcpkg_root = env_root;
+                std.debug.print("✓ 使用 VCPKG_ROOT 环境变量: {s}\n", .{vcpkg_root});
+            } else |_| {
+                // 2. 自动搜索 vcpkg 安装目录
+                std.debug.print("⚠ 未设置 VCPKG_ROOT，自动搜索 vcpkg...\n", .{});
+
+                if (findVcpkgRoot(b)) |found_root| {
+                    vcpkg_root = found_root;
+                } else {
+                    std.debug.print("\n❌ 无法自动找到 vcpkg 安装目录！\n\n", .{});
+                    std.debug.print("解决方案:\n", .{});
+                    std.debug.print("  1. 安装 vcpkg: git clone https://github.com/microsoft/vcpkg\n", .{});
+                    std.debug.print("  2. 安装 hidapi: vcpkg install hidapi:x64-windows\n", .{});
+                    std.debug.print("  3. 将 vcpkg.exe 添加到系统 PATH\n", .{});
+                    std.debug.print("  或设置环境变量: set VCPKG_ROOT=C:\\path\\to\\vcpkg\\installed\\x64-windows\n", .{});
+                    @panic("vcpkg 未找到");
+                }
+            }
+
+            // 配置 vcpkg 路径
             const include_path = b.fmt("{s}\\include", .{vcpkg_root});
             const lib_path = b.fmt("{s}\\lib", .{vcpkg_root});
             const dll_path = b.fmt("{s}\\bin\\hidapi.dll", .{vcpkg_root});
 
-            // 增加 include 搜索目录
             exe.addIncludePath(.{ .cwd_relative = include_path });
-            // 增加 lib 搜索目录
             exe.addLibraryPath(.{ .cwd_relative = lib_path });
-            // 链接第三方库 hidapi
             exe.linkSystemLibrary("hidapi");
 
-            // 自动复制 DLL 到输出目录
+            // 复制 DLL 到输出目录
             const install_dll = b.addInstallBinFile(.{ .cwd_relative = dll_path }, "hidapi.dll");
             b.getInstallStep().dependOn(&install_dll.step);
 
