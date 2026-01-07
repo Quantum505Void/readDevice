@@ -2,20 +2,23 @@ const std = @import("std");
 const webui = @import("webui");
 const hid = @import("hid.zig");
 const whitelist = @import("device_whitelist");
+const builtin = @import("builtin");
 
-// Windows API
-const windows = std.os.windows;
-const HANDLE = windows.HANDLE;
-const DWORD = windows.DWORD;
-const BOOL = windows.BOOL;
-const LPCWSTR = windows.LPCWSTR;
+// Windows API（仅在Windows平台上可用）
+const windows_mutex = if (builtin.target.os.tag == .windows) struct {
+    const windows = std.os.windows;
+    const HANDLE = windows.HANDLE;
+    const DWORD = windows.DWORD;
+    const BOOL = windows.BOOL;
+    const LPCWSTR = windows.LPCWSTR;
 
-extern "kernel32" fn CreateMutexW(lpMutexAttributes: ?*anyopaque, bInitialOwner: BOOL, lpName: LPCWSTR) callconv(windows.WINAPI) ?HANDLE;
-extern "kernel32" fn ReleaseMutex(hMutex: HANDLE) callconv(windows.WINAPI) BOOL;
-extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(windows.WINAPI) BOOL;
-extern "kernel32" fn GetLastError() callconv(windows.WINAPI) DWORD;
+    extern "kernel32" fn CreateMutexW(lpMutexAttributes: ?*anyopaque, bInitialOwner: BOOL, lpName: LPCWSTR) callconv(windows.WINAPI) ?HANDLE;
+    extern "kernel32" fn ReleaseMutex(hMutex: HANDLE) callconv(windows.WINAPI) BOOL;
+    extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(windows.WINAPI) BOOL;
+    extern "kernel32" fn GetLastError() callconv(windows.WINAPI) DWORD;
 
-const ERROR_ALREADY_EXISTS: DWORD = 183;
+    const ERROR_ALREADY_EXISTS: DWORD = 183;
+} else struct {};
 
 // ============================================================================
 // HID Device Reader - 基于 WebHID 规范的通用 HID 设备读取程序
@@ -751,21 +754,29 @@ pub fn main() !void {
     // 程序退出时清理内存分配器
     defer _ = gpa.deinit();
 
-    // 创建全局互斥锁，防止程序多开
-    const mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("Global\\ReadDeviceAppMutex");
-    const app_mutex = CreateMutexW(null, 1, mutex_name);
-    defer {
-        if (app_mutex) |mutex| {
-            _ = ReleaseMutex(mutex);
-            _ = CloseHandle(mutex);
-        }
-    }
+    // 创建全局锁，防止程序多开（跨平台实现）
+    const lock_file_path = if (builtin.target.os.tag == .windows)
+        "C:\\ProgramData\\ReadDeviceApp.lock"
+    else
+        "/tmp/readdevice.lock";
 
-    if (app_mutex == null or GetLastError() == ERROR_ALREADY_EXISTS) {
+    const lock_file = std.fs.cwd().createFile(lock_file_path, .{
+        .read = true,
+        .truncate = false,
+    }) catch |err| {
+        std.debug.print("⚠️  无法创建锁文件: {}\n", .{err});
+        std.time.sleep(2 * std.time.ns_per_s);
+        return;
+    };
+    defer lock_file.close();
+
+    // 尝试获取独占锁
+    lock_file.lock(.exclusive) catch {
         std.debug.print("⚠️  程序已在运行，请勿重复打开！\n", .{});
         std.time.sleep(2 * std.time.ns_per_s);
         return;
-    }
+    };
+    defer lock_file.unlock();
 
     std.debug.print("🚀 HID Device Reader 启动中...\n", .{});
     std.debug.print("📱 使用 WebUI 技术栈\n", .{});

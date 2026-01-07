@@ -43,17 +43,32 @@ pub fn build(b: *std.Build) void {
         },
         .windows => {
             // Windows: 使用 vcpkg 安装的 hidapi
-            const vcpkg_root = "E:\\GitFile\\vcpkg-master\\installed\\x64-windows";
+            // 优先使用环境变量 VCPKG_ROOT，否则使用默认路径
+            const vcpkg_root = std.process.getEnvVarOwned(b.allocator, "VCPKG_ROOT") catch |err| blk: {
+                if (err == error.EnvironmentVariableNotFound) {
+                    // 默认路径（用户可以修改或设置环境变量）
+                    std.debug.print("警告: 未设置 VCPKG_ROOT 环境变量，使用默认路径\n", .{});
+                    std.debug.print("建议: 设置环境变量 VCPKG_ROOT 指向 vcpkg 安装目录\n", .{});
+                    break :blk "C:\\vcpkg\\installed\\x64-windows";
+                } else {
+                    std.debug.print("错误: 无法读取环境变量: {}\n", .{err});
+                    break :blk "C:\\vcpkg\\installed\\x64-windows";
+                }
+            };
+            defer if (std.mem.indexOf(u8, vcpkg_root, ":\\") == null) b.allocator.free(vcpkg_root);
+
+            const include_path = b.fmt("{s}\\include", .{vcpkg_root});
+            const lib_path = b.fmt("{s}\\lib", .{vcpkg_root});
+            const dll_path = b.fmt("{s}\\bin\\hidapi.dll", .{vcpkg_root});
 
             // 增加 include 搜索目录
-            exe.addIncludePath(.{ .cwd_relative = vcpkg_root ++ "\\include" });
+            exe.addIncludePath(.{ .cwd_relative = include_path });
             // 增加 lib 搜索目录
-            exe.addLibraryPath(.{ .cwd_relative = vcpkg_root ++ "\\lib" });
+            exe.addLibraryPath(.{ .cwd_relative = lib_path });
             // 链接第三方库 hidapi
             exe.linkSystemLibrary("hidapi");
 
             // 自动复制 DLL 到输出目录
-            const dll_path = vcpkg_root ++ "\\bin\\hidapi.dll";
             const install_dll = b.addInstallBinFile(.{ .cwd_relative = dll_path }, "hidapi.dll");
             b.getInstallStep().dependOn(&install_dll.step);
 

@@ -68,9 +68,11 @@ pub const HidDevice = struct {
 
 // ============ 辅助函数 ============
 
-/// 转换宽字符串（UTF-16）为 UTF-8
-fn wcharToUtf8(allocator: std.mem.Allocator, wstr: [*:0]const u16) ![]const u8 {
-    if (wstr[0] == 0) return try allocator.dupe(u8, "");
+/// 转换宽字符串为 UTF-8
+/// 在 Windows 上，wchar_t 是 16 位 (UTF-16)
+/// 在 Linux 上，wchar_t 是 32 位 (UTF-32)
+fn wcharToUtf8(allocator: std.mem.Allocator, wstr: [*c]const c.wchar_t) ![]const u8 {
+    if (wstr == null or wstr[0] == 0) return try allocator.dupe(u8, "");
 
     // 计算长度
     var len: usize = 0;
@@ -78,18 +80,45 @@ fn wcharToUtf8(allocator: std.mem.Allocator, wstr: [*:0]const u16) ![]const u8 {
 
     if (len == 0) return try allocator.dupe(u8, "");
 
-    // 创建切片
-    const slice = wstr[0..len];
+    const builtin = @import("builtin");
+    const native_os = builtin.target.os.tag;
 
-    // 计算需要的 UTF-8 缓冲区大小
-    const utf8_str = std.unicode.utf16LeToUtf8AllocZ(allocator, slice) catch |err| {
-        std.debug.print("警告: UTF-16 转换失败: {}\n", .{err});
-        return try allocator.dupe(u8, "");
-    };
-    defer allocator.free(utf8_str);
+    // Windows: wchar_t 是 UTF-16LE
+    if (native_os == .windows) {
+        const wstr_u16: [*]const u16 = @ptrCast(wstr);
+        const slice = wstr_u16[0..len];
+        const utf8_str = std.unicode.utf16LeToUtf8AllocZ(allocator, slice) catch |err| {
+            std.debug.print("警告: UTF-16 转换失败: {}\n", .{err});
+            return try allocator.dupe(u8, "");
+        };
+        defer allocator.free(utf8_str);
+        return try allocator.dupe(u8, utf8_str);
+    }
+    // Linux/Unix: wchar_t 是 UTF-32 (UCS-4)
+    else {
+        const wstr_u32: [*]const i32 = @ptrCast(wstr);
 
-    // utf16LeToUtf8AllocZ 返回的 [:0]u8 类型，len 不包含 null 终止符，直接使用完整长度
-    return try allocator.dupe(u8, utf8_str);
+        // 计算所需的 UTF-8 缓冲区大小
+        var utf8_len: usize = 0;
+        for (0..len) |i| {
+            const codepoint: u21 = @intCast(wstr_u32[i] & 0x1FFFFF);
+            utf8_len += std.unicode.utf8CodepointSequenceLength(codepoint) catch 1;
+        }
+
+        // 分配缓冲区
+        const utf8_buf = try allocator.alloc(u8, utf8_len);
+        errdefer allocator.free(utf8_buf);
+
+        // 转换 UTF-32 到 UTF-8
+        var pos: usize = 0;
+        for (0..len) |i| {
+            const codepoint: u21 = @intCast(wstr_u32[i] & 0x1FFFFF);
+            const seq_len = std.unicode.utf8Encode(codepoint, utf8_buf[pos..]) catch continue;
+            pos += seq_len;
+        }
+
+        return utf8_buf[0..pos];
+    }
 }
 
 /// 从已打开的设备获取完整的字符串信息
@@ -106,46 +135,30 @@ fn getDeviceStrings(allocator: std.mem.Allocator, device: *hid_device) !struct {
     // 获取产品名称
     var product_name: []const u8 = "";
     {
-        var wstr_buf: [MAX_STR]u16 = [_]u16{0} ** MAX_STR;
+        var wstr_buf: [MAX_STR]c.wchar_t = [_]c.wchar_t{0} ** MAX_STR;
         const product_result = c.hid_get_product_string(device, &wstr_buf, MAX_STR);
         if (product_result == 0 and wstr_buf[0] != 0) {
-            // 找到字符串结束位置
-            var len: usize = 0;
-            while (len < MAX_STR and wstr_buf[len] != 0) : (len += 1) {}
-            if (len > 0) {
-                const slice = wstr_buf[0..len :0];
-                product_name = wcharToUtf8(allocator, @ptrCast(slice.ptr)) catch "";
-            }
+            product_name = wcharToUtf8(allocator, &wstr_buf) catch "";
         }
     }
 
     // 获取制造商名称
     var manufacturer_name: []const u8 = "";
     {
-        var wstr_buf: [MAX_STR]u16 = [_]u16{0} ** MAX_STR;
+        var wstr_buf: [MAX_STR]c.wchar_t = [_]c.wchar_t{0} ** MAX_STR;
         const mfg_result = c.hid_get_manufacturer_string(device, &wstr_buf, MAX_STR);
         if (mfg_result == 0 and wstr_buf[0] != 0) {
-            var len: usize = 0;
-            while (len < MAX_STR and wstr_buf[len] != 0) : (len += 1) {}
-            if (len > 0) {
-                const slice = wstr_buf[0..len :0];
-                manufacturer_name = wcharToUtf8(allocator, @ptrCast(slice.ptr)) catch "";
-            }
+            manufacturer_name = wcharToUtf8(allocator, &wstr_buf) catch "";
         }
     }
 
     // 获取序列号
     var serial_number: []const u8 = "";
     {
-        var wstr_buf: [MAX_STR]u16 = [_]u16{0} ** MAX_STR;
+        var wstr_buf: [MAX_STR]c.wchar_t = [_]c.wchar_t{0} ** MAX_STR;
         const serial_result = c.hid_get_serial_number_string(device, &wstr_buf, MAX_STR);
         if (serial_result == 0 and wstr_buf[0] != 0) {
-            var len: usize = 0;
-            while (len < MAX_STR and wstr_buf[len] != 0) : (len += 1) {}
-            if (len > 0) {
-                const slice = wstr_buf[0..len :0];
-                serial_number = wcharToUtf8(allocator, @ptrCast(slice.ptr)) catch "";
-            }
+            serial_number = wcharToUtf8(allocator, &wstr_buf) catch "";
         }
     }
 
@@ -355,18 +368,38 @@ pub fn openDeviceByVidPid(allocator: std.mem.Allocator, vid: []const u8, pid: []
             }
 
             // 关键：对于多接口设备，接口编号较大的通常是数据接口
-            // 从 /dev/hidrawN 提取 N，编号越大优先级越高
-            if (std.mem.lastIndexOf(u8, dev.device_path, "hidraw")) |idx| {
-                const num_start = idx + 6; // "hidraw".len
-                if (num_start < dev.device_path.len) {
-                    const num_str = dev.device_path[num_start..];
-                    if (std.fmt.parseInt(u8, num_str, 10)) |num| {
-                        // 接口编号作为主要优先级因子
-                        // 编号大的接口优先（通常 input2 > input1 > input0）
-                        priority = priority -| (num * 10);
-                    } else |_| {}
+            // 根据平台提取接口编号
+            const builtin = @import("builtin");
+            const native_os = builtin.target.os.tag;
+
+            if (native_os == .linux) {
+                // Linux: 从 /dev/hidrawN 提取 N，编号越大优先级越高
+                if (std.mem.lastIndexOf(u8, dev.device_path, "hidraw")) |idx| {
+                    const num_start = idx + 6; // "hidraw".len
+                    if (num_start < dev.device_path.len) {
+                        const num_str = dev.device_path[num_start..];
+                        if (std.fmt.parseInt(u8, num_str, 10)) |num| {
+                            // 接口编号作为主要优先级因子
+                            // 编号大的接口优先（通常 hidraw2 > hidraw1 > hidraw0）
+                            priority = priority -| (num * 10);
+                        } else |_| {}
+                    }
+                }
+            } else if (native_os == .windows) {
+                // Windows: 从路径中提取 mi_XX（接口编号）
+                // 例如: \\?\hid#vid_XXXX&pid_XXXX&mi_02#...
+                if (std.mem.indexOf(u8, dev.device_path, "&mi_")) |idx| {
+                    const num_start = idx + 4; // "&mi_".len
+                    if (num_start + 2 <= dev.device_path.len) {
+                        const num_str = dev.device_path[num_start .. num_start + 2];
+                        if (std.fmt.parseInt(u8, num_str, 16)) |num| {
+                            // 接口编号作为优先级因子
+                            priority = priority -| (num * 10);
+                        } else |_| {}
+                    }
                 }
             }
+            // macOS 和其他平台：不提取接口编号，使用默认优先级
 
             if (priority < best_priority) {
                 best_priority = priority;
