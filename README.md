@@ -6,7 +6,7 @@
 
 - 🚀 **高性能**: 使用 Zig 语言编写，性能优异
 - 🌐 **WebUI**: 使用 [zig-webui](https://github.com/webui-dev/zig-webui) 将浏览器作为原生 GUI
-- 🔌 **跨平台**: 支持 Linux 和 Windows
+- 🔌 **跨平台**: 支持 Linux、Windows 和 macOS（基于 hidapi）
 - 📡 **实时数据**: Zig 后端实时读取 HID 设备数据并推送到前端
 - 💾 **自动保存**: 每次读取的数据自动保存到带时间戳的 .hid 文件
 - 🎨 **美观界面**: 渐变色设计，响应式布局，基于 Vue 3 + Naive UI
@@ -46,12 +46,13 @@
 
 ## 🛠️ 技术栈
 
-- **后端**: Zig 0.13.0 + [zig-webui](https://github.com/webui-dev/zig-webui) v2.5.0-beta.2
+- **后端**: Zig 0.13.0 + [zig-webui](https://github.com/webui-dev/zig-webui) v2.5.0-beta.2 + [hidapi](https://github.com/libusb/hidapi)
 - **前端**: Vue 3 (UMD) + Naive UI + HTML5 + CSS3
-- **数据存储**: 文本文件（`data/device_data_*.txt`，每次读取独立文件）
-- **设备接口**:
-  - Linux: hidraw + sysfs
-  - Windows: HID API
+- **数据存储**: 文本文件（`data/device_data_*.hid`，每次读取独立文件）
+- **设备接口**: hidapi（跨平台 HID 库）
+  - Linux: hidapi-hidraw
+  - Windows: Windows HID API
+  - macOS: IOHidManager (IOKit)
 
 ### ⚠️ 为什么不能直接使用 .vue 和 .ts 文件？
 
@@ -76,11 +77,46 @@
 
 ### Linux
 ```bash
-sudo apt-get install libusb-1.0-0-dev libudev-dev
+# Debian/Ubuntu
+sudo apt install libhidapi-dev
+
+# Fedora/RHEL
+sudo dnf install hidapi-devel
+
+# Arch Linux
+sudo pacman -S hidapi
+```
+
+**权限设置**: 创建 udev 规则以允许非 root 用户访问 HID 设备
+```bash
+sudo nano /etc/udev/rules.d/99-hidraw-permissions.rules
+```
+添加：
+```
+KERNEL=="hidraw*", MODE="0666"
+```
+然后重新加载：
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
 
 ### Windows
-需要 Windows SDK (已包含在 Visual Studio 中)
+```powershell
+# 使用 vcpkg
+.\vcpkg install hidapi:x64-windows
+
+# 或者使用 MSYS2
+pacman -S mingw-w64-x86_64-hidapi
+```
+
+### macOS
+```bash
+# 使用 Homebrew
+brew install hidapi
+```
+
+> 📚 **详细的平台特定说明请参考 [PLATFORM_SUPPORT.md](PLATFORM_SUPPORT.md)**
 
 ## 🚀 构建和运行
 

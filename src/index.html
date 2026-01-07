@@ -457,12 +457,6 @@
         padding: 60px 20px;
         color: #999;
       }
-
-      .empty-icon {
-        font-size: 64px;
-        margin-bottom: 16px;
-        opacity: 0.3;
-      }
     </style>
   </head>
   <body>
@@ -572,9 +566,10 @@
                 v-if="uniqueDevices.length === 0"
                 description="暂无设备"
                 style="padding: 40px 0"
+                size="huge"
               >
                 <template #icon>
-                  <div class="empty-icon">🖥️</div>
+                  <span style="font-size: 64px; opacity: 0.3">🔌</span>
                 </template>
                 <template #extra>
                   <n-button @click="refreshDevices" :loading="isRefreshing">
@@ -698,9 +693,14 @@
                   <span class="log-time">[{{ log.time }}]</span>
                   <span class="log-data">{{ log.message }}</span>
                 </div>
-                <n-empty v-if="logs.length === 0" description="暂无日志" style="padding: 40px 0">
+                <n-empty
+                  v-if="logs.length === 0"
+                  description="暂无日志"
+                  style="padding: 40px 0"
+                  size="huge"
+                >
                   <template #icon>
-                    <div class="empty-icon">📝</div>
+                    <span style="font-size: 48px; opacity: 0.3">📝</span>
                   </template>
                 </n-empty>
               </div>
@@ -785,9 +785,9 @@
                     </tbody>
                   </table>
                 </div>
-                <n-empty v-else description="暂无数据" style="padding: 40px 0">
+                <n-empty v-else description="暂无数据" style="padding: 40px 0" size="huge">
                   <template #icon>
-                    <div style="font-size: 48px">📭</div>
+                    <span style="font-size: 48px; opacity: 0.3">📭</span>
                   </template>
                 </n-empty>
 
@@ -1913,14 +1913,23 @@
 
           // 更新进度（由后端调用）
           window.updateProgress = (address, bytes, percent) => {
+            if (!state || !state.readProgress) {
+              console.warn('⚠️ State not ready for progress update');
+              return;
+            }
+
+            // 使用 Vue.nextTick 确保更新被正确处理
             state.readProgress.packets = Math.floor(address / 32); // 计算包数
             state.readProgress.bytes = bytes;
-            state.readProgress.percent = percent || 0; // 百分比
+            state.readProgress.percent = Math.min(percent || 0, 100); // 百分比，限制最大100
+
             if (state.readProgress.startTime > 0) {
               state.readProgress.duration = Math.floor(
                 (Date.now() - state.readProgress.startTime) / 1000
               );
             }
+
+            console.log(`📊 进度更新: ${percent.toFixed(1)}% | 包数: ${state.readProgress.packets} | 字节: ${bytes}`);
           };
 
           // 清空日志

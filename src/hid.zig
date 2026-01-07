@@ -1,5 +1,40 @@
 const std = @import("std");
 
+// ============ hidapi C 库绑定 ============
+
+/// hidapi C 库的 FFI 绑定
+pub const c = struct {
+    pub extern "c" fn hid_init() c_int;
+    pub extern "c" fn hid_exit() c_int;
+    pub extern "c" fn hid_enumerate(vendor_id: c_ushort, product_id: c_ushort) ?*hid_device_info;
+    pub extern "c" fn hid_free_enumeration(devs: ?*hid_device_info) void;
+    pub extern "c" fn hid_open_path(path: [*:0]const u8) ?*hid_device;
+    pub extern "c" fn hid_close(dev: ?*hid_device) void;
+    pub extern "c" fn hid_read(dev: ?*hid_device, data: [*]u8, length: usize) c_int;
+    pub extern "c" fn hid_write(dev: ?*hid_device, data: [*]const u8, length: usize) c_int;
+    pub extern "c" fn hid_read_timeout(dev: ?*hid_device, data: [*]u8, length: usize, milliseconds: c_int) c_int;
+    pub extern "c" fn hid_send_feature_report(dev: ?*hid_device, data: [*]const u8, length: usize) c_int;
+    pub extern "c" fn hid_get_feature_report(dev: ?*hid_device, data: [*]u8, length: usize) c_int;
+    pub extern "c" fn hid_get_report_descriptor(dev: ?*hid_device, buf: [*]u8, buf_size: usize) c_int;
+    pub extern "c" fn hid_error(dev: ?*hid_device) [*:0]const u8;
+
+    pub const hid_device = opaque {};
+
+    pub const hid_device_info = extern struct {
+        path: [*:0]u8,
+        vendor_id: c_ushort,
+        product_id: c_ushort,
+        serial_number: [*:0]u16,
+        release_number: c_ushort,
+        manufacturer_string: [*:0]u16,
+        product_string: [*:0]u16,
+        usage_page: c_ushort,
+        usage: c_ushort,
+        interface_number: c_int,
+        next: ?*hid_device_info,
+    };
+};
+
 // ============ HID 设备类型定义 ============
 
 /// HID 设备类型枚举
@@ -9,6 +44,20 @@ pub const DeviceType = enum(u8) {
     keyboard = 1, // 键盘设备
     other = 2, // 其他 HID 设备
     bluetooth = 3, // 蓝牙设备
+};
+
+/// HID Report 类型
+pub const ReportType = enum(u8) {
+    input = 1, // Input Report
+    output = 2, // Output Report
+    feature = 3, // Feature Report
+};
+
+/// HID Report 信息
+pub const ReportInfo = struct {
+    report_id: u8, // Report ID
+    report_type: ReportType, // Report 类型
+    report_size: u16, // Report 大小（字节）
 };
 
 // ============ HID 设备信息结构 ============
@@ -38,321 +87,367 @@ pub const HidDevice = struct {
     }
 };
 
-// ============ Linux 平台 HID 实现 ============
+// ============ 辅助函数 ============
 
-/// Linux 平台的 HID 设备操作实现
-/// 使用 hidraw 接口和 sysfs 文件系统
-pub const LinuxHid = struct {
-    /// 枚举所有 Linux HID 设备
-    /// 扫描 /dev/hidraw* 设备并读取其信息
-    pub fn enumerate(allocator: std.mem.Allocator) !std.ArrayList(HidDevice) {
-        var devices = std.ArrayList(HidDevice).init(allocator);
-        errdefer devices.deinit();
+/// 转换宽字符串（UTF-16）为 UTF-8
+fn wcharToUtf8(allocator: std.mem.Allocator, wstr: [*:0]const u16) ![]const u8 {
+    if (wstr[0] == 0) return try allocator.dupe(u8, "");
 
-        // 打开 /dev 目录，查找所有 hidraw 设备
-        var dir = try std.fs.openDirAbsolute("/dev", .{ .iterate = true });
-        defer dir.close();
+    // 计算长度
+    var len: usize = 0;
+    while (wstr[len] != 0) : (len += 1) {}
 
-        var iter = dir.iterate();
-        while (try iter.next()) |entry| {
-            // 只处理以 "hidraw" 开头的设备
-            if (std.mem.startsWith(u8, entry.name, "hidraw")) {
-                // 读取该设备的详细信息
-                const device = try getDeviceInfo(allocator, entry.name);
-                try devices.append(device);
-            }
-        }
+    if (len == 0) return try allocator.dupe(u8, "");
 
-        return devices;
+    // 创建切片
+    const slice = wstr[0..len];
+
+    // 计算需要的 UTF-8 缓冲区大小
+    const utf8_len = std.unicode.utf16LeToUtf8AllocZ(allocator, slice) catch |err| {
+        std.debug.print("警告: UTF-16 转换失败: {}\n", .{err});
+        return try allocator.dupe(u8, "");
+    };
+    defer allocator.free(utf8_len);
+
+    return try allocator.dupe(u8, utf8_len[0 .. utf8_len.len - 1]);
+}
+
+/// 根据 Usage Page 和 Usage 检测设备类型
+fn detectDeviceType(usage_page: u16, usage: u16, product_name: []const u8) DeviceType {
+    // 检查产品名称中是否包含蓝牙关键词
+    var lower_buffer: [256]u8 = undefined;
+    const lower_name = if (product_name.len <= lower_buffer.len)
+        std.ascii.lowerString(&lower_buffer, product_name)
+    else
+        product_name;
+
+    if (std.mem.indexOf(u8, lower_name, "bluetooth") != null or
+        std.mem.indexOf(u8, lower_name, "bt") != null)
+    {
+        return .bluetooth;
     }
 
-    /// 获取单个设备的详细信息
-    /// 通过 sysfs 读取设备的 VID、PID、名称等信息
-    fn getDeviceInfo(allocator: std.mem.Allocator, device_name: []const u8) !HidDevice {
-        // 构建 sysfs 设备路径
-        var path_buffer: [512]u8 = undefined;
-        const sys_path = try std.fmt.bufPrint(&path_buffer, "/sys/class/hidraw/{s}/device", .{device_name});
-
-        // 读取 uevent 文件获取设备信息
-        const uevent_content = readSysfsFile(allocator, sys_path, "uevent") catch |err| blk: {
-            std.debug.print("警告: 无法读取 {s} 的 uevent: {}\n", .{ device_name, err });
-            break :blk null;
-        };
-        defer if (uevent_content) |content| allocator.free(content);
-
-        var vid: []const u8 = "0000";
-        var pid: []const u8 = "0000";
-        var name: []const u8 = "Unknown Device";
-        var usage_page: u16 = 0;
-        var usage: u16 = 0;
-        var bus_type: u16 = 0; // 总线类型（0005=蓝牙，0003=USB）
-
-        // 用于存储大写的VID/PID
-        var vid_buffer: [4]u8 = undefined;
-        var pid_buffer: [4]u8 = undefined;
-
-        // 解析 uevent 文件
-        if (uevent_content) |content| {
-            var lines = std.mem.splitScalar(u8, content, '\n');
-            while (lines.next()) |line| {
-                // 解析 HID_ID=0018:000004F3:0000317C 格式
-                if (std.mem.startsWith(u8, line, "HID_ID=")) {
-                    const id_part = line[7..]; // 跳过 "HID_ID="
-                    // 格式: bus:vid:pid
-                    var parts = std.mem.splitScalar(u8, id_part, ':');
-                    if (parts.next()) |bus_hex| {
-                        bus_type = std.fmt.parseInt(u16, bus_hex, 16) catch 0;
-                    }
-                    if (parts.next()) |vid_hex| {
-                        if (vid_hex.len >= 8) {
-                            for (vid_hex[4..8], 0..) |c, i| {
-                                vid_buffer[i] = std.ascii.toUpper(c);
-                            }
-                            vid = &vid_buffer; // 取后4位并转大写
-                        }
-                    }
-                    if (parts.next()) |pid_hex| {
-                        if (pid_hex.len >= 8) {
-                            for (pid_hex[4..8], 0..) |c, i| {
-                                pid_buffer[i] = std.ascii.toUpper(c);
-                            }
-                            pid = &pid_buffer; // 取后4位并转大写
-                        }
-                    }
-                }
-                // 解析 HID_NAME=ELAN06FA:00 04F3:317C
-                else if (std.mem.startsWith(u8, line, "HID_NAME=")) {
-                    name = line[9..];
-                }
-                // 解析 MODALIAS=hid:b0018g0004v000004F3p0000317C
-                // 格式: hid:bBUSgGROUPvVENDORpPRODUCT
-                // 其中 GROUP 包含 Usage Page (高4位) 和 Usage (低4位)
-                else if (std.mem.startsWith(u8, line, "MODALIAS=hid:")) {
-                    const modalias = line[13..]; // 跳过 "MODALIAS=hid:"
-                    // 查找 'g' 开始的部分
-                    if (std.mem.indexOf(u8, modalias, "g")) |g_pos| {
-                        if (modalias.len >= g_pos + 5) {
-                            const group_str = modalias[g_pos + 1 .. g_pos + 5];
-                            // group 的前两位是 usage page，后两位是 usage
-                            usage_page = std.fmt.parseInt(u16, group_str[0..2], 16) catch 0;
-                            usage = std.fmt.parseInt(u16, group_str[2..4], 16) catch 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 构建设备路径
-        const device_path = try std.fmt.allocPrint(allocator, "/dev/{s}", .{device_name});
-
-        // 根据总线类型和 Usage Page/Usage 推测设备类型
-        const device_type = detectDeviceType(bus_type, usage_page, usage, name);
-
-        return HidDevice{
-            .vid = try allocator.dupe(u8, vid),
-            .pid = try allocator.dupe(u8, pid),
-            .product_name = try allocator.dupe(u8, name),
-            .manufacturer = try allocator.dupe(u8, "Unknown"),
-            .serial_number = try allocator.dupe(u8, ""),
-            .device_path = device_path,
-            .device_type = device_type,
-            .usage_page = usage_page,
-            .usage = usage,
-        };
-    }
-
-    /// 从 sysfs 文件读取内容
-    fn readSysfsFile(allocator: std.mem.Allocator, base_path: []const u8, file_name: []const u8) !?[]const u8 {
-        var path_buffer: [512]u8 = undefined;
-        const file_path = try std.fmt.bufPrint(&path_buffer, "{s}/{s}", .{ base_path, file_name });
-
-        // 打开并读取文件
-        const file = std.fs.openFileAbsolute(file_path, .{}) catch {
-            return null;
-        };
-        defer file.close();
-
-        // 读取文件内容
-        const content = file.readToEndAlloc(allocator, 4096) catch {
-            return null;
-        };
-
-        // 去除换行符和空白字符
-        const trimmed = std.mem.trim(u8, content, &std.ascii.whitespace);
-
-        // 如果内容为空，返回 null
-        if (trimmed.len == 0) {
-            allocator.free(content);
-            return null;
-        }
-
-        // 复制修剪后的内容
-        const result = try allocator.dupe(u8, trimmed);
-        allocator.free(content);
-        return result;
-    }
-
-    /// 根据总线类型、Usage Page 和 Usage 检测设备类型
-    /// bus_type: 0x0005 = Bluetooth, 0x0003 = USB, 0x0018 = I2C
-    /// HID Usage Page 1 = Generic Desktop, Usage 2 = Mouse, Usage 6 = Keyboard
-    fn detectDeviceType(bus_type: u16, usage_page: u16, usage: u16, product_name: []const u8) DeviceType {
-        // 优先检测蓝牙设备（bus_type = 0x0005）
-        if (bus_type == 0x0005) {
-            return .bluetooth;
-        }
-
-        // 使用 Usage Page 和 Usage 判断
-        if (usage_page == 1) { // Generic Desktop
-            if (usage == 2) { // Mouse
-                return .mouse;
-            } else if (usage == 6) { // Keyboard
-                return .keyboard;
-            }
-        }
-
-        // 如果 Usage 信息不准确，再根据产品名称判断
-        return detectDeviceTypeByName(product_name);
-    }
-
-    /// 根据产品名称检测设备类型（备用方案）
-    fn detectDeviceTypeByName(product_name: []const u8) DeviceType {
-        // 为避免修改原字符串，使用临时缓冲区
-        var lower_buffer: [256]u8 = undefined;
-        const lower_name = if (product_name.len <= lower_buffer.len)
-            std.ascii.lowerString(&lower_buffer, product_name)
-        else
-            product_name; // 如果太长就不转换了
-
-        // 检查是否包含鼠标关键词
-        if (std.mem.indexOf(u8, lower_name, "mouse") != null or
-            std.mem.indexOf(u8, lower_name, "mice") != null or
-            std.mem.indexOf(u8, lower_name, "pointer") != null)
-        {
+    // 使用 Usage Page 和 Usage 判断
+    if (usage_page == 1) { // Generic Desktop
+        if (usage == 2) { // Mouse
             return .mouse;
-        }
-
-        // 检查是否包含键盘关键词
-        if (std.mem.indexOf(u8, lower_name, "keyboard") != null or
-            std.mem.indexOf(u8, lower_name, "kbd") != null)
-        {
+        } else if (usage == 6) { // Keyboard
             return .keyboard;
         }
-
-        return .other;
     }
 
-    /// 打开 HID 设备进行读写
-    pub fn open(device_path: []const u8) !std.fs.File {
-        return try std.fs.openFileAbsolute(device_path, .{ .mode = .read_write });
+    // 根据产品名称判断
+    if (std.mem.indexOf(u8, lower_name, "mouse") != null or
+        std.mem.indexOf(u8, lower_name, "mice") != null or
+        std.mem.indexOf(u8, lower_name, "pointer") != null)
+    {
+        return .mouse;
     }
 
-    /// 从 HID 设备读取数据
-    pub fn read(file: std.fs.File, buffer: []u8) !usize {
-        return try file.read(buffer);
+    if (std.mem.indexOf(u8, lower_name, "keyboard") != null or
+        std.mem.indexOf(u8, lower_name, "kbd") != null)
+    {
+        return .keyboard;
     }
 
-    /// 向 HID 设备写入数据
-    pub fn write(file: std.fs.File, data: []const u8) !usize {
-        return try file.write(data);
+    return .other;
+}
+
+// ============ HID API 实现 ============
+
+/// 初始化 hidapi 库
+/// 必须在使用其他 hidapi 函数之前调用
+pub fn init() !void {
+    const result = c.hid_init();
+    if (result != 0) {
+        return error.InitFailed;
     }
+}
 
-    /// 使用 ioctl 设置 HID Feature Report
-    pub fn setFeature(file: std.fs.File, report: []const u8) !void {
-        const HIDIOCSFEATRE = 0xC0000000 | (@as(u32, @intCast(report.len)) << 16) | (@as(u32, 'H') << 8) | 0x06;
-        const result = std.os.linux.ioctl(file.handle, HIDIOCSFEATRE, @intFromPtr(report.ptr));
-        if (result < 0) {
-            return error.IoctlFailed;
-        }
+/// 清理 hidapi 库
+/// 程序结束时调用以释放资源
+pub fn exit() !void {
+    const result = c.hid_exit();
+    if (result != 0) {
+        return error.ExitFailed;
     }
-
-    /// 使用 ioctl 获取 HID Feature Report
-    pub fn getFeature(file: std.fs.File, report: []u8) !usize {
-        const HIDIOCGFEATRE = 0xC0000000 | (@as(u32, @intCast(report.len)) << 16) | (@as(u32, 'H') << 8) | 0x07;
-        const result = std.os.linux.ioctl(file.handle, HIDIOCGFEATRE, @intFromPtr(report.ptr));
-        if (result < 0) {
-            return error.IoctlFailed;
-        }
-        return @intCast(result);
-    }
-};
-
-// ============ Windows 平台 HID 实现 ============
-
-/// Windows 平台的 HID 设备操作实现
-/// 使用 Windows HID API (hid.lib 和 setupapi.lib)
-const WindowsHid = struct {
-    /// 枚举所有 Windows HID 设备
-    /// 使用 SetupAPI 查询系统中的 HID 设备
-    pub fn enumerate(allocator: std.mem.Allocator) !std.ArrayList(HidDevice) {
-        var devices = std.ArrayList(HidDevice).init(allocator);
-        errdefer devices.deinit();
-
-        // TODO: 实现 Windows HID 设备枚举
-        return devices;
-    }
-
-    /// 打开 Windows HID 设备
-    pub fn open(device_path: []const u8) !*anyopaque {
-        _ = device_path;
-        return error.NotImplemented;
-    }
-
-    /// 从 Windows HID 设备读取数据
-    pub fn read(handle: *anyopaque, buffer: []u8) !usize {
-        _ = handle;
-        _ = buffer;
-        return error.NotImplemented;
-    }
-
-    /// 向 Windows HID 设备写入数据
-    pub fn write(handle: *anyopaque, data: []const u8) !usize {
-        _ = handle;
-        _ = data;
-        return error.NotImplemented;
-    }
-};
-
-// ============ 跨平台公共 API ============
+}
 
 /// 枚举当前系统中的所有 HID 设备
-/// 根据编译目标平台自动选择对应的实现
 pub fn enumerateDevices(allocator: std.mem.Allocator) !std.ArrayList(HidDevice) {
-    return switch (@import("builtin").os.tag) {
-        .linux => LinuxHid.enumerate(allocator),
-        .windows => WindowsHid.enumerate(allocator),
-        else => error.UnsupportedPlatform,
-    };
+    var devices = std.ArrayList(HidDevice).init(allocator);
+    errdefer devices.deinit();
+
+    // 枚举所有 HID 设备 (0, 0 表示所有设备)
+    const dev_list = c.hid_enumerate(0, 0);
+    defer c.hid_free_enumeration(dev_list);
+
+    if (dev_list == null) {
+        return devices; // 没有设备
+    }
+
+    var current: ?*c.hid_device_info = dev_list;
+    while (current) |info| : (current = info.next) {
+        // 转换 VID/PID 为十六进制字符串
+        var vid_buf: [4]u8 = undefined;
+        var pid_buf: [4]u8 = undefined;
+        const vid_str = try std.fmt.bufPrint(&vid_buf, "{X:0>4}", .{info.vendor_id});
+        const pid_str = try std.fmt.bufPrint(&pid_buf, "{X:0>4}", .{info.product_id});
+
+        // 转换产品名称和制造商名称
+        const product_name = try wcharToUtf8(allocator, info.product_string);
+        errdefer allocator.free(product_name);
+
+        const manufacturer = try wcharToUtf8(allocator, info.manufacturer_string);
+        errdefer allocator.free(manufacturer);
+
+        const serial_number = try wcharToUtf8(allocator, info.serial_number);
+        errdefer allocator.free(serial_number);
+
+        // 复制设备路径
+        const path_len = std.mem.len(info.path);
+        const device_path = try allocator.alloc(u8, path_len);
+        errdefer allocator.free(device_path);
+        @memcpy(device_path, info.path[0..path_len]);
+
+        // 检测设备类型
+        const device_type = detectDeviceType(info.usage_page, info.usage, product_name);
+
+        try devices.append(.{
+            .vid = try allocator.dupe(u8, vid_str),
+            .pid = try allocator.dupe(u8, pid_str),
+            .product_name = product_name,
+            .manufacturer = manufacturer,
+            .serial_number = serial_number,
+            .device_path = device_path,
+            .device_type = device_type,
+            .usage_page = info.usage_page,
+            .usage = info.usage,
+        });
+    }
+
+    return devices;
 }
 
 /// 打开指定路径的 HID 设备
 pub fn openDevice(device_path: []const u8) !*anyopaque {
-    return switch (@import("builtin").os.tag) {
-        .linux => @ptrCast(try LinuxHid.open(device_path)),
-        .windows => try WindowsHid.open(device_path),
-        else => error.UnsupportedPlatform,
-    };
+    // 创建以 null 结尾的字符串
+    var path_buffer: [512]u8 = undefined;
+    if (device_path.len >= path_buffer.len) {
+        return error.PathTooLong;
+    }
+    @memcpy(path_buffer[0..device_path.len], device_path);
+    path_buffer[device_path.len] = 0;
+
+    const device = c.hid_open_path(@ptrCast(&path_buffer));
+    if (device == null) {
+        return error.OpenFailed;
+    }
+
+    return @ptrCast(device);
+}
+
+/// 打开指定 VID/PID 的最佳设备接口
+/// 自动选择正确的 HID 接口:
+/// - 优先选择 usage_page == 0xFF00 (vendor-specific interface)
+/// - 其次选择 DeviceType.other
+/// - 对于相同优先级，选择路径编号较大的 (input2 > input1 > input0)
+pub fn openDeviceByVidPid(allocator: std.mem.Allocator, vid: []const u8, pid: []const u8) !*anyopaque {
+    const devices = try enumerateDevices(allocator);
+    defer {
+        for (devices.items) |*dev| {
+            dev.deinit(allocator);
+        }
+        devices.deinit();
+    }
+
+    var best_path: ?[]const u8 = null;
+    var best_priority: u16 = 65535;
+
+    // 转换 VID/PID 为数字进行比较
+    const target_vid = std.fmt.parseInt(u16, vid, 16) catch return error.InvalidVid;
+    const target_pid = std.fmt.parseInt(u16, pid, 16) catch return error.InvalidPid;
+
+    for (devices.items) |dev| {
+        const dev_vid = std.fmt.parseInt(u16, dev.vid, 16) catch continue;
+        const dev_pid = std.fmt.parseInt(u16, dev.pid, 16) catch continue;
+
+        if (dev_vid == target_vid and dev_pid == target_pid) {
+            // 参考 WebHID 的接口选择逻辑:
+            // WebHID 会将同一设备的所有接口都暴露给用户
+            // 在命令行环境中，我们需要自动选择最合适的接口
+
+            var priority: u16 = 5000; // 基础优先级
+
+            // 排除标准输入设备接口（鼠标/键盘），它们通常不是数据接口
+            if (dev.usage_page == 0x0001) {
+                // Generic Desktop Controls
+                if (dev.usage == 0x0002) {
+                    // Mouse - 排除
+                    priority = 9000;
+                } else if (dev.usage == 0x0006) {
+                    // Keyboard - 排除
+                    priority = 9100;
+                } else {
+                    // Other generic desktop
+                    priority = 3000;
+                }
+            } else if (dev.usage_page >= 0xFF00) {
+                // Vendor-specific interface (0xFF00-0xFFFF)
+                // 通常是控制接口，优先级较高但不是最高
+                priority = 2000;
+            } else if (dev.usage_page == 0x000C) {
+                // Consumer Control - 可能是数据接口
+                priority = 1000;
+            } else {
+                // Other usage pages
+                priority = 3000;
+            }
+
+            // 关键：对于多接口设备，接口编号较大的通常是数据接口
+            // 从 /dev/hidrawN 提取 N，编号越大优先级越高
+            if (std.mem.lastIndexOf(u8, dev.device_path, "hidraw")) |idx| {
+                const num_start = idx + 6; // "hidraw".len
+                if (num_start < dev.device_path.len) {
+                    const num_str = dev.device_path[num_start..];
+                    if (std.fmt.parseInt(u8, num_str, 10)) |num| {
+                        // 接口编号作为主要优先级因子
+                        // 编号大的接口优先（通常 input2 > input1 > input0）
+                        priority = priority -| (num * 10);
+                    } else |_| {}
+                }
+            }
+
+            if (priority < best_priority) {
+                best_priority = priority;
+                best_path = dev.device_path;
+            }
+        }
+    }
+
+    if (best_path) |path| {
+        std.debug.print("🔧 为 VID={s} PID={s} 选择接口: {s} (优先级={})\n", .{ vid, pid, path, best_priority });
+        return try openDevice(path);
+    }
+
+    return error.DeviceNotFound;
+}
+
+/// 关闭 HID 设备
+pub fn closeDevice(handle: *anyopaque) void {
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    c.hid_close(device);
 }
 
 /// 从 HID 设备读取数据
 pub fn readDevice(handle: *anyopaque, buffer: []u8) !usize {
-    return switch (@import("builtin").os.tag) {
-        .linux => {
-            const file: *std.fs.File = @ptrCast(@alignCast(handle));
-            return try LinuxHid.read(file.*, buffer);
-        },
-        .windows => try WindowsHid.read(handle, buffer),
-        else => error.UnsupportedPlatform,
-    };
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_read(device, buffer.ptr, buffer.len);
+    if (result < 0) {
+        return error.ReadFailed;
+    }
+    return @intCast(result);
+}
+
+/// 从 HID 设备读取数据（带超时）
+pub fn readDeviceTimeout(handle: *anyopaque, buffer: []u8, timeout_ms: i32) !usize {
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_read_timeout(device, buffer.ptr, buffer.len, timeout_ms);
+    if (result < 0) {
+        return error.ReadFailed;
+    }
+    return @intCast(result);
 }
 
 /// 向 HID 设备写入数据
 pub fn writeDevice(handle: *anyopaque, data: []const u8) !usize {
-    return switch (@import("builtin").os.tag) {
-        .linux => {
-            const file: *std.fs.File = @ptrCast(@alignCast(handle));
-            return try LinuxHid.write(file.*, data);
-        },
-        .windows => try WindowsHid.write(handle, data),
-        else => error.UnsupportedPlatform,
-    };
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_write(device, data.ptr, data.len);
+    if (result < 0) {
+        return error.WriteFailed;
+    }
+    return @intCast(result);
+}
+
+/// 发送 Feature Report
+pub fn sendFeatureReport(handle: *anyopaque, data: []const u8) !usize {
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_send_feature_report(device, data.ptr, data.len);
+    if (result < 0) {
+        return error.SendFeatureFailed;
+    }
+    return @intCast(result);
+}
+
+/// 获取 Feature Report
+pub fn getFeatureReport(handle: *anyopaque, buffer: []u8) !usize {
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_get_feature_report(device, buffer.ptr, buffer.len);
+    if (result < 0) {
+        return error.GetFeatureFailed;
+    }
+    return @intCast(result);
+}
+
+/// 读取数据(使用 hid_read,带超时)
+pub fn readTimeout(handle: *anyopaque, buffer: []u8, timeout_ms: c_int) !usize {
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_read_timeout(device, buffer.ptr, buffer.len, timeout_ms);
+    if (result < 0) {
+        return error.ReadFailed;
+    }
+    return @intCast(result);
+}
+
+/// 获取最后的错误信息
+pub fn getError(handle: *anyopaque) []const u8 {
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const err_str = c.hid_error(device);
+    const len = std.mem.len(err_str);
+    return err_str[0..len];
+}
+
+/// 获取 Report Descriptor（原始字节）
+pub fn getReportDescriptor(handle: *anyopaque, buffer: []u8) !usize {
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_get_report_descriptor(device, buffer.ptr, buffer.len);
+    if (result < 0) {
+        return error.GetDescriptorFailed;
+    }
+    return @intCast(result);
+}
+
+/// 检测指定 Report ID 是否支持 Feature Report
+/// 通过尝试读取来检测（类似 WebHID 的方式）
+pub fn hasFeatureReport(handle: *anyopaque, report_id: u8) bool {
+    var test_buffer: [256]u8 = undefined;
+    test_buffer[0] = report_id;
+
+    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const result = c.hid_get_feature_report(device, &test_buffer, test_buffer.len);
+
+    return result > 0;
+}
+
+/// 扫描设备支持的 Feature Report IDs（0x00-0xFF）
+pub fn scanFeatureReports(allocator: std.mem.Allocator, handle: *anyopaque) ![]u8 {
+    var supported_ids = std.ArrayList(u8).init(allocator);
+    errdefer supported_ids.deinit();
+
+    std.debug.print("🔍 扫描支持的 Feature Report IDs...\n", .{});
+
+    // 扫描所有可能的 Report ID
+    var report_id: u16 = 0;
+    while (report_id <= 255) : (report_id += 1) {
+        const id: u8 = @intCast(report_id);
+
+        if (hasFeatureReport(handle, id)) {
+            try supported_ids.append(id);
+            std.debug.print("  ✓ Report ID 0x{x:0>2} 支持 Feature Report\n", .{id});
+        }
+    }
+
+    std.debug.print("✅ 扫描完成，找到 {} 个支持的 Report ID\n", .{supported_ids.items.len});
+
+    return supported_ids.toOwnedSlice();
 }

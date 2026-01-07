@@ -3,6 +3,33 @@ const webui = @import("webui");
 const hid = @import("hid.zig");
 const whitelist = @import("device_whitelist");
 
+// ============================================================================
+// HID Device Reader - 基于 WebHID 规范的通用 HID 设备读取程序
+// ============================================================================
+//
+// 本程序采用符合 WebHID 规范的通用方法进行 HID 设备访问：
+//
+// 1. 【通用层】接口识别和选择：
+//    - 基于 HID Usage Page/Usage 自动识别设备功能
+//    - 智能选择最佳接口（排除 Mouse/Keyboard，优先 Consumer/Vendor）
+//    - 参考：WebHID API - HIDDevice.collections[].usagePage/usage
+//
+// 2. 【通用层】Report Descriptor 扫描：
+//    - 扫描所有支持的 Feature Report IDs (0x00-0xFF)
+//    - 验证所需 Report ID 的可用性
+//    - 参考：WebHID API - HIDDevice.collections[].featureReports
+//
+// 3. 【应用层】设备特定协议：
+//    - EEPROM 读取命令（厂商自定义，非 HID 标准）
+//    - 两种读取模式：8系（逐字节）和 9系（32字节批量）
+//
+// 相关规范：
+// - WebHID API: https://wicg.github.io/webhid/
+// - USB HID Usage Tables: https://www.usb.org/document-library/hid-usage-tables-122
+// - USB HID Class Definition: https://www.usb.org/document-library/device-class-definition-hid-111
+//
+// ============================================================================
+
 // 全局内存分配器
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
@@ -131,10 +158,12 @@ fn startReading(e: *webui.Event) void {
                 if (current_device_path) |old_path| {
                     allocator.free(old_path);
                 }
-                current_device_path = allocator.dupe(u8, device_path.?) catch null;
+                // 保存 VID/PID 而不是路径，稍后根据VID/PID选择最佳接口
+                const vid_pid = std.fmt.allocPrint(allocator, "{s}:{s}", .{ device_vid.?, device_pid.? }) catch null;
+                current_device_path = vid_pid;
 
                 const mode_name = if (config.mode == 1) "A8xx/8系 (逐字节)" else "A9xx/9系 (32字节批量)";
-                std.debug.print("💿 设备路径: {s}\n", .{device_path.?});
+                std.debug.print("💿 设备 VID:PID={s}\n", .{vid_pid.?});
                 std.debug.print("📋 自动选择读取模式: {s}\n", .{mode_name});
 
                 // 将读取模式存储到全局变量中供读取线程使用
@@ -274,19 +303,28 @@ fn cleanup(e: *webui.Event) void {
 /// 在后台持续读取真实 HID 设备数据并推送到前端，同时保存到文件
 fn readDeviceThread() void {
     device_path_mutex.lock();
-    const path_copy = if (current_device_path) |p| allocator.dupe(u8, p) catch null else null;
+    const vid_pid_copy = if (current_device_path) |p| allocator.dupe(u8, p) catch null else null;
     device_path_mutex.unlock();
 
-    const path = path_copy orelse {
-        std.debug.print("❌ 未设置设备路径\n", .{});
+    const vid_pid = vid_pid_copy orelse {
+        std.debug.print("❌ 未设置设备 VID:PID\n", .{});
         is_reading.store(false, .release);
         return;
     };
-    defer allocator.free(path);
+    defer allocator.free(vid_pid);
+
+    // 解析 VID:PID
+    const colon_pos = std.mem.indexOf(u8, vid_pid, ":") orelse {
+        std.debug.print("❌ VID:PID 格式错误\n", .{});
+        is_reading.store(false, .release);
+        return;
+    };
+    const vid = vid_pid[0..colon_pos];
+    const pid = vid_pid[colon_pos + 1 ..];
 
     const mode = current_device_mode;
     const mode_name = if (mode == 1) "8系(逐字节)" else "9系(32字节批量)";
-    std.debug.print("📖 打开设备: {s} [模式: {s}]\n", .{ path, mode_name });
+    std.debug.print("📖 打开设备: VID={s} PID={s} [模式: {s}]\n", .{ vid, pid, mode_name });
 
     // 生成带时间戳的文件名
     const timestamp = std.time.milliTimestamp();
@@ -314,8 +352,14 @@ fn readDeviceThread() void {
         _ = main_window.run(msg);
     }
 
-    // 打开 HID 设备文件，使用读写模式以支持 Feature Report
-    const device_file = std.fs.openFileAbsolute(path, .{ .mode = .read_write }) catch |err| {
+    // ============ 通用方法 1: 智能接口选择 ============
+    // 基于 WebHID 规范，使用 Usage Page/Usage 自动选择最佳接口
+    // 优先级算法：
+    // 1. 排除标准输入设备 (Mouse/Keyboard)
+    // 2. 优先选择 Consumer Control (0x000C) 或 Vendor-Defined (0xFF00+)
+    // 3. 接口编号大的优先 (通常数据接口编号较大)
+    std.debug.print("🔧 使用智能接口选择算法（基于 Usage Page/Usage）...\n", .{});
+    const device_handle = hid.openDeviceByVidPid(allocator, vid, pid) catch |err| {
         std.debug.print("❌ 无法打开设备: {}\n", .{err});
         const error_msg = std.fmt.allocPrintZ(allocator, "addLogFromBackend('❌ 无法打开设备: {}')", .{err}) catch {
             is_reading.store(false, .release);
@@ -326,27 +370,82 @@ fn readDeviceThread() void {
         is_reading.store(false, .release);
         return;
     };
-    defer device_file.close();
+    defer hid.closeDevice(device_handle);
 
-    std.debug.print("✅ 设备已打开，开始读取数据...\n", .{});
+    std.debug.print("✅ 设备已打开（自动选择了最佳接口）\n", .{});
+
+    // ============ 通用方法 2: 扫描 Feature Reports ============
+    // 符合 WebHID Report Descriptor 解析规范
+    // 扫描设备支持的所有 Feature Report IDs (0x00-0xFF)
+    // 类似于 WebHID 的 device.collections[].featureReports
+    std.debug.print("🔍 扫描设备支持的 Feature Report IDs（WebHID 规范）...\n", .{});
+    const supported_reports = hid.scanFeatureReports(allocator, device_handle) catch |err| {
+        std.debug.print("❌ 扫描 Feature Reports 失败: {}\n", .{err});
+        const error_msg = std.fmt.allocPrintZ(allocator, "addLogFromBackend('❌ 设备不支持 Feature Report 扫描')", .{}) catch {
+            is_reading.store(false, .release);
+            return;
+        };
+        defer allocator.free(error_msg);
+        _ = main_window.run(error_msg);
+        is_reading.store(false, .release);
+        return;
+    };
+    defer allocator.free(supported_reports);
+
+    // 显示支持的 Report IDs
+    std.debug.print("📊 设备支持 {} 个 Feature Report IDs: ", .{supported_reports.len});
+    for (supported_reports) |report_id| {
+        std.debug.print("0x{X:0>2} ", .{report_id});
+    }
+    std.debug.print("\n", .{});
+
+    // ============ 通用方法 3: 验证 Report ID 支持 ============
+    // 检查是否支持所需的 Report ID (EEPROM 访问需要 0x07)
+    // 而不是通过"读取非零数据"来判断接口是否正确
+    var supports_0x07 = false;
+    for (supported_reports) |report_id| {
+        if (report_id == 0x07) {
+            supports_0x07 = true;
+            break;
+        }
+    }
+
+    if (!supports_0x07) {
+        std.debug.print("❌ 设备不支持 Report ID 0x07，无法进行 EEPROM 读取\n", .{});
+        const error_msg = std.fmt.allocPrintZ(allocator, "addLogFromBackend('❌ 设备不支持 EEPROM 访问 (缺少 Report ID 0x07)')", .{}) catch {
+            is_reading.store(false, .release);
+            return;
+        };
+        defer allocator.free(error_msg);
+        _ = main_window.run(error_msg);
+        is_reading.store(false, .release);
+        return;
+    }
+
+    std.debug.print("✅ 设备支持 EEPROM 访问，开始读取数据...\n", .{});
+
+    // ============ 设备特定协议层 ============
+    // 以下代码使用设备特定的 EEPROM 读取协议
+    // 注意：这不是 HID 标准的一部分，而是硬件厂商自定义的应用层协议
+    // 通用的部分（接口选择、Report 扫描）已经在上面完成
 
     // 测试 JavaScript 回调是否可用
     std.debug.print("🧪 测试 JavaScript 回调函数...\n", .{});
     main_window.run("testCallback()");
     std.debug.print("🧪 已调用 testCallback()\n", .{});
 
-    // 根据模式选择读取方法
+    // 根据模式选择读取方法（设备特定）
     if (mode == 1) {
-        readDeviceType8(device_file);
+        readDeviceType8(device_handle);
     } else {
-        readDeviceType9(device_file);
+        readDeviceType9(device_handle);
     }
 
     std.debug.print("✅ 设备读取线程退出\n", .{});
 }
 
 /// 8系读取方法 (EEPROMPageRead) - 逐字节读取
-fn readDeviceType8(device_file: std.fs.File) void {
+fn readDeviceType8(device_handle: *anyopaque) void {
     var address: u32 = 0;
     var total_bytes: u64 = 0;
 
@@ -368,7 +467,7 @@ fn readDeviceType8(device_file: std.fs.File) void {
             feature_report[6] = 0;
             feature_report[7] = @intCast(READ_SIZE - 1);
 
-            hid.LinuxHid.setFeature(device_file, &feature_report) catch |err| {
+            _ = hid.sendFeatureReport(device_handle, &feature_report) catch |err| {
                 std.debug.print("❌ 初始化寄存器失败: {}\n", .{err});
                 return;
             };
@@ -380,7 +479,7 @@ fn readDeviceType8(device_file: std.fs.File) void {
         feature_report[0] = 0x07;
         feature_report[1] = EEP_RW_CMD;
         feature_report[2] = 0x00;
-        hid.LinuxHid.setFeature(device_file, &feature_report) catch {};
+        _ = hid.sendFeatureReport(device_handle, &feature_report) catch {};
         std.time.sleep(2 * std.time.ns_per_ms);
 
         // 逐字节读取数据
@@ -399,19 +498,33 @@ fn readDeviceType8(device_file: std.fs.File) void {
             feature_report[6] = 0;
             feature_report[7] = @intCast(READ_SIZE - 1);
 
-            hid.LinuxHid.setFeature(device_file, &feature_report) catch |err| {
+            _ = hid.sendFeatureReport(device_handle, &feature_report) catch |err| {
                 std.debug.print("❌ 读取命令失败: {}\n", .{err});
                 continue;
             };
             std.time.sleep(2 * std.time.ns_per_ms);
 
-            // 获取数据
+            // 获取数据 - 使用 getFeatureReport (Feature Report 已确认支持)
             @memset(&feature_report, 0);
             feature_report[0] = 0x07;
-            _ = hid.LinuxHid.getFeature(device_file, &feature_report) catch |err| {
+            const read_bytes = hid.getFeatureReport(device_handle, &feature_report) catch |err| {
                 std.debug.print("❌ 获取数据失败: {}\n", .{err});
                 continue;
             };
+
+            if (i == 0) {
+                std.debug.print("🔍 读取到 {} 字节，数据: [{x:0>2}] {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2}\n", .{
+                    read_bytes,
+                    feature_report[0],
+                    feature_report[1],
+                    feature_report[2],
+                    feature_report[3],
+                    feature_report[4],
+                    feature_report[5],
+                    feature_report[6],
+                    feature_report[7],
+                });
+            }
 
             page_data[i] = feature_report[1];
         }
@@ -421,7 +534,7 @@ fn readDeviceType8(device_file: std.fs.File) void {
         feature_report[0] = 0x07;
         feature_report[1] = EEP_RW_CMD;
         feature_report[2] = 0x00;
-        hid.LinuxHid.setFeature(device_file, &feature_report) catch {};
+        _ = hid.sendFeatureReport(device_handle, &feature_report) catch {};
         std.time.sleep(2 * std.time.ns_per_ms);
 
         sendDataToFrontend(address, &page_data, &total_bytes);
@@ -437,7 +550,7 @@ fn readDeviceType8(device_file: std.fs.File) void {
 }
 
 /// 9系读取方法 (EEPROMPageRead32) - 32字节批量读取
-fn readDeviceType9(device_file: std.fs.File) void {
+fn readDeviceType9(device_handle: *anyopaque) void {
     var address: u32 = 0;
     var total_bytes: u64 = 0;
 
@@ -458,7 +571,7 @@ fn readDeviceType9(device_file: std.fs.File) void {
         feature_report[6] = 0;
         feature_report[7] = @intCast(READ_SIZE - 1 + 64 + 128); // Length
 
-        hid.LinuxHid.setFeature(device_file, &feature_report) catch |err| {
+        _ = hid.sendFeatureReport(device_handle, &feature_report) catch |err| {
             std.debug.print("❌ 清空寄存器失败: {}\n", .{err});
             return;
         };
@@ -475,7 +588,7 @@ fn readDeviceType9(device_file: std.fs.File) void {
         feature_report[6] = 0;
         feature_report[7] = @intCast(READ_SIZE - 1 + 64 + 128);
 
-        hid.LinuxHid.setFeature(device_file, &feature_report) catch |err| {
+        _ = hid.sendFeatureReport(device_handle, &feature_report) catch |err| {
             std.debug.print("❌ 读取命令失败: {}\n", .{err});
             return;
         };
@@ -484,7 +597,7 @@ fn readDeviceType9(device_file: std.fs.File) void {
         // 获取32字节数据
         @memset(&feature_report, 0);
         feature_report[0] = 0x07;
-        _ = hid.LinuxHid.getFeature(device_file, &feature_report) catch |err| {
+        _ = hid.getFeatureReport(device_handle, &feature_report) catch |err| {
             std.debug.print("❌ 获取数据失败: {}\n", .{err});
             continue;
         };
@@ -558,6 +671,19 @@ pub fn main() !void {
     std.debug.print("🚀 HID Device Reader 启动中...\n", .{});
     std.debug.print("📱 使用 WebUI 技术栈\n", .{});
     std.debug.print("📁 数据将自动保存到 data/ 目录\n", .{});
+
+    // 初始化 hidapi
+    hid.init() catch |err| {
+        std.debug.print("❌ 初始化 hidapi 失败: {}\n", .{err});
+        return err;
+    };
+    defer {
+        hid.exit() catch |err| {
+            std.debug.print("⚠️  退出 hidapi 失败: {}\n", .{err});
+        };
+    }
+
+    std.debug.print("✅ hidapi 已初始化\n", .{});
 
     // 确保数据目录存在
     std.fs.cwd().makeDir("data") catch |err| {

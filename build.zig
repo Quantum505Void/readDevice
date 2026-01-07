@@ -29,6 +29,30 @@ pub fn build(b: *std.Build) void {
     // 需要链接 C 标准库
     exe.linkLibC();
 
+    // 根据目标平台链接对应的 hidapi 库
+    const target_os = target.result.os.tag;
+    switch (target_os) {
+        .linux => {
+            // Linux: 使用 hidapi-hidraw（推荐）或 hidapi-libusb
+            exe.linkSystemLibrary("hidapi-hidraw");
+        },
+        .windows => {
+            // Windows: 使用 hidapi（基于 Windows HID API）
+            exe.linkSystemLibrary("hidapi");
+        },
+        .macos => {
+            // macOS: 使用 hidapi（基于 IOHidManager）
+            exe.linkSystemLibrary("hidapi");
+            // macOS 可能还需要链接系统框架
+            exe.linkFramework("IOKit");
+            exe.linkFramework("CoreFoundation");
+        },
+        else => {
+            // 其他平台尝试通用链接
+            exe.linkSystemLibrary("hidapi");
+        },
+    }
+
     b.installArtifact(exe);
 
     // 运行命令
