@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Windows 下隐藏控制台窗口
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+    }
+
     // 添加 zig-webui 依赖
     const webui = b.dependency("webui", .{
         .target = target,
@@ -37,8 +42,28 @@ pub fn build(b: *std.Build) void {
             exe.linkSystemLibrary("hidapi-hidraw");
         },
         .windows => {
-            // Windows: 使用 hidapi（基于 Windows HID API）
+            // Windows: 使用 vcpkg 安装的 hidapi
+            const vcpkg_root = "E:\\GitFile\\vcpkg-master\\installed\\x64-windows";
+
+            // 增加 include 搜索目录
+            exe.addIncludePath(.{ .cwd_relative = vcpkg_root ++ "\\include" });
+            // 增加 lib 搜索目录
+            exe.addLibraryPath(.{ .cwd_relative = vcpkg_root ++ "\\lib" });
+            // 链接第三方库 hidapi
             exe.linkSystemLibrary("hidapi");
+
+            // 自动复制 DLL 到输出目录
+            const dll_path = vcpkg_root ++ "\\bin\\hidapi.dll";
+            const install_dll = b.addInstallBinFile(.{ .cwd_relative = dll_path }, "hidapi.dll");
+            b.getInstallStep().dependOn(&install_dll.step);
+
+            // 复制静态资源文件到输出目录
+            const install_assets = b.addInstallDirectory(.{
+                .source_dir = b.path("src/assets"),
+                .install_dir = .bin,
+                .install_subdir = "assets",
+            });
+            b.getInstallStep().dependOn(&install_assets.step);
         },
         .macos => {
             // macOS: 使用 hidapi（基于 IOHidManager）

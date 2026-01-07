@@ -3,6 +3,20 @@ const webui = @import("webui");
 const hid = @import("hid.zig");
 const whitelist = @import("device_whitelist");
 
+// Windows API
+const windows = std.os.windows;
+const HANDLE = windows.HANDLE;
+const DWORD = windows.DWORD;
+const BOOL = windows.BOOL;
+const LPCWSTR = windows.LPCWSTR;
+
+extern "kernel32" fn CreateMutexW(lpMutexAttributes: ?*anyopaque, bInitialOwner: BOOL, lpName: LPCWSTR) callconv(windows.WINAPI) ?HANDLE;
+extern "kernel32" fn ReleaseMutex(hMutex: HANDLE) callconv(windows.WINAPI) BOOL;
+extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(windows.WINAPI) BOOL;
+extern "kernel32" fn GetLastError() callconv(windows.WINAPI) DWORD;
+
+const ERROR_ALREADY_EXISTS: DWORD = 183;
+
 // ============================================================================
 // HID Device Reader - 基于 WebHID 规范的通用 HID 设备读取程序
 // ============================================================================
@@ -55,6 +69,34 @@ var filename_mutex = std.Thread.Mutex{};
 // @embedFile 会在编译时加载文件内容，路径相对于当前 .zig 文件
 const html_content = @embedFile("index.html");
 
+// ============ JSON 辅助函数 ============
+
+/// 转义 JSON 字符串中的特殊字符
+/// 处理: " \ / \b \f \n \r \t 以及其他控制字符
+fn escapeJsonString(alloc: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).init(alloc);
+    errdefer result.deinit();
+
+    for (input) |ch| {
+        switch (ch) {
+            '"' => try result.appendSlice("\\\""),
+            '\\' => try result.appendSlice("\\\\"),
+            '\n' => try result.appendSlice("\\n"), // 0x0A
+            '\r' => try result.appendSlice("\\r"), // 0x0D
+            '\t' => try result.appendSlice("\\t"), // 0x09
+            '\x08' => try result.appendSlice("\\b"), // backspace 0x08
+            '\x0C' => try result.appendSlice("\\f"), // form feed 0x0C
+            // 其他控制字符: 0x00-0x07, 0x0B, 0x0E-0x1F
+            0x00...0x07, 0x0B, 0x0E...0x1F => {
+                try result.writer().print("\\u{x:0>4}", .{ch});
+            },
+            else => try result.append(ch),
+        }
+    }
+
+    return result.toOwnedSlice();
+}
+
 // ============ WebUI 回调函数 ============
 
 /// 获取设备列表的回调函数
@@ -87,15 +129,46 @@ fn getDevices(e: *webui.Event) void {
         const is_supported = whitelist.isDeviceSupported(device.vid, device.pid) != null;
 
         if (device_count > 0) writer.writeAll(",") catch return;
+
+        // 转义设备路径中的反斜杠（Windows 路径）
+        var escaped_path = std.ArrayList(u8).init(allocator);
+        defer escaped_path.deinit();
+        for (device.device_path) |ch| {
+            if (ch == '\\') {
+                escaped_path.appendSlice("\\\\") catch continue;
+            } else {
+                escaped_path.append(ch) catch continue;
+            }
+        }
+
+        // 转义 JSON 字符串字段
+        const escaped_name = escapeJsonString(allocator, device.product_name) catch {
+            std.debug.print("警告: 无法转义产品名称\n", .{});
+            continue;
+        };
+        defer allocator.free(escaped_name);
+
+        const escaped_manufacturer = escapeJsonString(allocator, device.manufacturer) catch {
+            std.debug.print("警告: 无法转义制造商名称\n", .{});
+            continue;
+        };
+        defer allocator.free(escaped_manufacturer);
+
+        const escaped_serial = escapeJsonString(allocator, device.serial_number) catch {
+            std.debug.print("警告: 无法转义序列号\n", .{});
+            continue;
+        };
+        defer allocator.free(escaped_serial);
+
         // 格式化单个设备信息为 JSON 对象，添加 supported 字段标识是否可读取
         std.fmt.format(writer, "{{\"vid\":\"{s}\",\"pid\":\"{s}\",\"name\":\"{s}\",\"manufacturer\":\"{s}\",\"serial\":\"{s}\",\"type\":{d},\"path\":\"{s}\",\"usagePage\":\"0x{X:0>4}\",\"usage\":\"0x{X:0>2}\",\"supported\":{s}}}", .{
             device.vid,
             device.pid,
-            device.product_name,
-            device.manufacturer,
-            device.serial_number,
+            escaped_name,
+            escaped_manufacturer,
+            escaped_serial,
             @intFromEnum(device.device_type),
-            device.device_path,
+            escaped_path.items,
             device.usage_page,
             device.usage,
             if (is_supported) "true" else "false",
@@ -272,31 +345,41 @@ fn clearAllHistory(e: *webui.Event) void {
 /// 在窗口关闭时被调用，用于清理所有服务和资源
 fn cleanup(e: *webui.Event) void {
     std.debug.print("🧹 清理资源和服务...\n", .{});
+    cleanupResources();
+    std.debug.print("✅ 清理完成\n", .{});
+    e.returnString("{\"success\":true}");
+}
 
+/// 窗口事件处理器
+/// 监听窗口关闭事件，立即退出程序
+fn handleWindowEvents(e: *webui.Event) void {
+    if (e.event_type == .EVENT_DISCONNECTED) {
+        std.debug.print("❌ 窗口关闭事件，立即退出\n", .{});
+        cleanupResources();
+        webui.exit();
+    }
+}
+
+/// 清理所有资源
+fn cleanupResources() void {
     // 停止读取
     is_reading.store(false, .release);
 
-    // 等待一小段时间确保读取线程退出
-    std.time.sleep(100 * std.time.ns_per_ms);
-
-    // 释放设备路径
+    // 释放设备路径内存
     device_path_mutex.lock();
-    defer device_path_mutex.unlock();
     if (current_device_path) |path| {
         allocator.free(path);
         current_device_path = null;
     }
+    device_path_mutex.unlock();
 
-    // 释放文件名
+    // 释放文件名内存
     filename_mutex.lock();
     if (current_filename) |fname| {
         allocator.free(fname);
         current_filename = null;
     }
     filename_mutex.unlock();
-
-    std.debug.print("✅ 清理完成\n", .{});
-    e.returnString("{\"success\":true}");
 }
 
 /// 设备读取线程函数
@@ -668,6 +751,22 @@ pub fn main() !void {
     // 程序退出时清理内存分配器
     defer _ = gpa.deinit();
 
+    // 创建全局互斥锁，防止程序多开
+    const mutex_name = std.unicode.utf8ToUtf16LeStringLiteral("Global\\ReadDeviceAppMutex");
+    const app_mutex = CreateMutexW(null, 1, mutex_name);
+    defer {
+        if (app_mutex) |mutex| {
+            _ = ReleaseMutex(mutex);
+            _ = CloseHandle(mutex);
+        }
+    }
+
+    if (app_mutex == null or GetLastError() == ERROR_ALREADY_EXISTS) {
+        std.debug.print("⚠️  程序已在运行，请勿重复打开！\n", .{});
+        std.time.sleep(2 * std.time.ns_per_s);
+        return;
+    }
+
     std.debug.print("🚀 HID Device Reader 启动中...\n", .{});
     std.debug.print("📱 使用 WebUI 技术栈\n", .{});
     std.debug.print("📁 数据将自动保存到 data/ 目录\n", .{});
@@ -695,15 +794,44 @@ pub fn main() !void {
     // 创建 WebUI 窗口实例
     main_window = webui.newWindow();
 
-    // 设置静态资源根目录为 src，这样可以访问 /assets/js/ 下的文件
-    _ = main_window.setRootFolder("src");
+    // 根据assets目录位置自动选择根目录
+    // Debug模式(zig build run): 使用src/作为根目录
+    // Release模式(直接运行exe): 使用exe所在目录
+    const exe_path = std.fs.selfExePathAlloc(allocator) catch |err| {
+        std.debug.print("❌ 无法获取可执行文件路径: {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(exe_path);
 
-    // 设置窗口大小和位置，避免闪烁
+    const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
+
+    // 检查exe所在目录是否有assets文件夹（Release模式）
+    const assets_in_exe_dir = blk: {
+        const test_path = std.fs.path.join(allocator, &[_][]const u8{ exe_dir, "assets" }) catch break :blk false;
+        defer allocator.free(test_path);
+
+        std.debug.print("🔍 检测资源目录: {s}\n", .{test_path});
+        std.fs.accessAbsolute(test_path, .{}) catch |err| {
+            std.debug.print("  ❌ 不存在: {}\n", .{err});
+            break :blk false;
+        };
+        std.debug.print("  ✅ 存在\n", .{});
+        break :blk true;
+    };
+
+    const root_folder = if (assets_in_exe_dir) exe_dir else "src";
+    const root_folder_z = allocator.dupeZ(u8, root_folder) catch |err| {
+        std.debug.print("❌ 无法复制路径: {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(root_folder_z);
+
+    std.debug.print("📂 静态资源根目录: {s}\n", .{root_folder_z});
+    _ = main_window.setRootFolder(root_folder_z);
+
+    // 设置窗口大小和位置
     _ = main_window.setSize(1400, 900);
     _ = main_window.setPosition(100, 50);
-
-    // 设置窗口启动时隐藏，等资源加载完再显示
-    _ = main_window.setHide(true);
 
     // 将 Zig 函数绑定到 JavaScript，使前端可以通过 webui.call() 调用
     // bind() 返回绑定 ID (usize)，0 表示绑定失败
@@ -711,6 +839,9 @@ pub fn main() !void {
     _ = main_window.bind("startReading", startReading);
     _ = main_window.bind("stopReading", stopReading);
     _ = main_window.bind("cleanup", cleanup);
+
+    // 绑定空事件处理器，监听窗口关闭事件
+    _ = main_window.bind("", handleWindowEvents);
 
     // 显示窗口，加载内嵌的 HTML 内容
     // show() 返回 bool，true 表示成功，false 表示失败
@@ -728,24 +859,19 @@ pub fn main() !void {
     // 阻塞主线程，等待所有 WebUI 窗口关闭
     webui.wait();
 
-    // 程序退出前的清理工作
-    is_reading.store(false, .release);
+    std.debug.print("🔄 正在清理资源...\n", .{});
 
-    // 释放设备路径内存
-    device_path_mutex.lock();
-    if (current_device_path) |path| {
-        allocator.free(path);
-        current_device_path = null;
-    }
-    device_path_mutex.unlock();
+    // 清理所有资源
+    cleanupResources();
 
-    // 释放文件名内存
-    filename_mutex.lock();
-    if (current_filename) |fname| {
-        allocator.free(fname);
-        current_filename = null;
-    }
-    filename_mutex.unlock();
+    // 删除浏览器配置文件
+    webui.deleteAllProfiles();
+
+    // 清理 WebUI 资源
+    webui.clean();
 
     std.debug.print("👋 程序退出\n", .{});
+
+    // 确保程序完全退出
+    std.process.exit(0);
 }

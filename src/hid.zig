@@ -1,39 +1,18 @@
 const std = @import("std");
 
 // ============ hidapi C 库绑定 ============
+// 使用 @cImport 方式导入 hidapi 头文件
+// 参考: https://course.ziglang.cc/advanced/interact-with-c
 
-/// hidapi C 库的 FFI 绑定
-pub const c = struct {
-    pub extern "c" fn hid_init() c_int;
-    pub extern "c" fn hid_exit() c_int;
-    pub extern "c" fn hid_enumerate(vendor_id: c_ushort, product_id: c_ushort) ?*hid_device_info;
-    pub extern "c" fn hid_free_enumeration(devs: ?*hid_device_info) void;
-    pub extern "c" fn hid_open_path(path: [*:0]const u8) ?*hid_device;
-    pub extern "c" fn hid_close(dev: ?*hid_device) void;
-    pub extern "c" fn hid_read(dev: ?*hid_device, data: [*]u8, length: usize) c_int;
-    pub extern "c" fn hid_write(dev: ?*hid_device, data: [*]const u8, length: usize) c_int;
-    pub extern "c" fn hid_read_timeout(dev: ?*hid_device, data: [*]u8, length: usize, milliseconds: c_int) c_int;
-    pub extern "c" fn hid_send_feature_report(dev: ?*hid_device, data: [*]const u8, length: usize) c_int;
-    pub extern "c" fn hid_get_feature_report(dev: ?*hid_device, data: [*]u8, length: usize) c_int;
-    pub extern "c" fn hid_get_report_descriptor(dev: ?*hid_device, buf: [*]u8, buf_size: usize) c_int;
-    pub extern "c" fn hid_error(dev: ?*hid_device) [*:0]const u8;
+/// 使用 @cImport 自动翻译 hidapi C 头文件
+/// 这是 Zig 官方推荐的方式，利用 translate-c 功能自动转换 C 代码
+pub const c = @cImport({
+    @cInclude("hidapi/hidapi.h");
+});
 
-    pub const hid_device = opaque {};
-
-    pub const hid_device_info = extern struct {
-        path: [*:0]u8,
-        vendor_id: c_ushort,
-        product_id: c_ushort,
-        serial_number: [*:0]u16,
-        release_number: c_ushort,
-        manufacturer_string: [*:0]u16,
-        product_string: [*:0]u16,
-        usage_page: c_ushort,
-        usage: c_ushort,
-        interface_number: c_int,
-        next: ?*hid_device_info,
-    };
-};
+// 为了保持 API 兼容性，创建类型别名
+pub const hid_device = c.hid_device;
+pub const hid_device_info = c.struct_hid_device_info;
 
 // ============ HID 设备类型定义 ============
 
@@ -103,54 +82,97 @@ fn wcharToUtf8(allocator: std.mem.Allocator, wstr: [*:0]const u16) ![]const u8 {
     const slice = wstr[0..len];
 
     // 计算需要的 UTF-8 缓冲区大小
-    const utf8_len = std.unicode.utf16LeToUtf8AllocZ(allocator, slice) catch |err| {
+    const utf8_str = std.unicode.utf16LeToUtf8AllocZ(allocator, slice) catch |err| {
         std.debug.print("警告: UTF-16 转换失败: {}\n", .{err});
         return try allocator.dupe(u8, "");
     };
-    defer allocator.free(utf8_len);
+    defer allocator.free(utf8_str);
 
-    return try allocator.dupe(u8, utf8_len[0 .. utf8_len.len - 1]);
+    // utf16LeToUtf8AllocZ 返回的 [:0]u8 类型，len 不包含 null 终止符，直接使用完整长度
+    return try allocator.dupe(u8, utf8_str);
 }
 
-/// 根据 Usage Page 和 Usage 检测设备类型
-fn detectDeviceType(usage_page: u16, usage: u16, product_name: []const u8) DeviceType {
-    // 检查产品名称中是否包含蓝牙关键词
-    var lower_buffer: [256]u8 = undefined;
-    const lower_name = if (product_name.len <= lower_buffer.len)
-        std.ascii.lowerString(&lower_buffer, product_name)
-    else
-        product_name;
+/// 从已打开的设备获取完整的字符串信息
+/// 参考 hidapi 文档和 WebHID API，enumerate 返回的字符串可能被截断
+/// 需要打开设备后使用 hid_get_*_string 函数获取完整信息
+fn getDeviceStrings(allocator: std.mem.Allocator, device: *hid_device) !struct {
+    product: []const u8,
+    manufacturer: []const u8,
+    serial: []const u8,
+} {
+    // 缓冲区大小：根据 USB HID 规范，字符串描述符最大 255 字符
+    const MAX_STR: usize = 256;
 
-    if (std.mem.indexOf(u8, lower_name, "bluetooth") != null or
-        std.mem.indexOf(u8, lower_name, "bt") != null)
+    // 获取产品名称
+    var product_name: []const u8 = "";
     {
-        return .bluetooth;
-    }
-
-    // 使用 Usage Page 和 Usage 判断
-    if (usage_page == 1) { // Generic Desktop
-        if (usage == 2) { // Mouse
-            return .mouse;
-        } else if (usage == 6) { // Keyboard
-            return .keyboard;
+        var wstr_buf: [MAX_STR]u16 = [_]u16{0} ** MAX_STR;
+        const product_result = c.hid_get_product_string(device, &wstr_buf, MAX_STR);
+        if (product_result == 0 and wstr_buf[0] != 0) {
+            // 找到字符串结束位置
+            var len: usize = 0;
+            while (len < MAX_STR and wstr_buf[len] != 0) : (len += 1) {}
+            if (len > 0) {
+                const slice = wstr_buf[0..len :0];
+                product_name = wcharToUtf8(allocator, @ptrCast(slice.ptr)) catch "";
+            }
         }
     }
 
-    // 根据产品名称判断
-    if (std.mem.indexOf(u8, lower_name, "mouse") != null or
-        std.mem.indexOf(u8, lower_name, "mice") != null or
-        std.mem.indexOf(u8, lower_name, "pointer") != null)
+    // 获取制造商名称
+    var manufacturer_name: []const u8 = "";
     {
-        return .mouse;
+        var wstr_buf: [MAX_STR]u16 = [_]u16{0} ** MAX_STR;
+        const mfg_result = c.hid_get_manufacturer_string(device, &wstr_buf, MAX_STR);
+        if (mfg_result == 0 and wstr_buf[0] != 0) {
+            var len: usize = 0;
+            while (len < MAX_STR and wstr_buf[len] != 0) : (len += 1) {}
+            if (len > 0) {
+                const slice = wstr_buf[0..len :0];
+                manufacturer_name = wcharToUtf8(allocator, @ptrCast(slice.ptr)) catch "";
+            }
+        }
     }
 
-    if (std.mem.indexOf(u8, lower_name, "keyboard") != null or
-        std.mem.indexOf(u8, lower_name, "kbd") != null)
+    // 获取序列号
+    var serial_number: []const u8 = "";
     {
-        return .keyboard;
+        var wstr_buf: [MAX_STR]u16 = [_]u16{0} ** MAX_STR;
+        const serial_result = c.hid_get_serial_number_string(device, &wstr_buf, MAX_STR);
+        if (serial_result == 0 and wstr_buf[0] != 0) {
+            var len: usize = 0;
+            while (len < MAX_STR and wstr_buf[len] != 0) : (len += 1) {}
+            if (len > 0) {
+                const slice = wstr_buf[0..len :0];
+                serial_number = wcharToUtf8(allocator, @ptrCast(slice.ptr)) catch "";
+            }
+        }
     }
 
-    return .other;
+    return .{
+        .product = product_name,
+        .manufacturer = manufacturer_name,
+        .serial = serial_number,
+    };
+}
+
+/// 根据 Usage Page 和 Usage 检测设备类型（仅依赖 HID 规范标准值）
+fn detectDeviceType(usage_page: u16, usage: u16, product_name: []const u8) DeviceType {
+    _ = product_name; // 不使用产品名称，仅依赖 HID 标准值
+
+    // 严格按照 HID Usage Tables 规范判断
+    // 参考: https://usb.org/sites/default/files/hut1_21.pdf
+    switch (usage_page) {
+        0x0001 => { // Generic Desktop Page
+            switch (usage) {
+                0x02 => return .mouse, // Mouse
+                0x06 => return .keyboard, // Keyboard
+                else => return .other, // Joystick, Gamepad, etc.
+            }
+        },
+        0x0007 => return .keyboard, // Keyboard/Keypad Page
+        else => return .other, // 其他所有情况（包括 Consumer, Vendor-defined 等）
+    }
 }
 
 // ============ HID API 实现 ============
@@ -186,7 +208,7 @@ pub fn enumerateDevices(allocator: std.mem.Allocator) !std.ArrayList(HidDevice) 
         return devices; // 没有设备
     }
 
-    var current: ?*c.hid_device_info = dev_list;
+    var current: ?*hid_device_info = dev_list;
     while (current) |info| : (current = info.next) {
         // 转换 VID/PID 为十六进制字符串
         var vid_buf: [4]u8 = undefined;
@@ -194,15 +216,38 @@ pub fn enumerateDevices(allocator: std.mem.Allocator) !std.ArrayList(HidDevice) 
         const vid_str = try std.fmt.bufPrint(&vid_buf, "{X:0>4}", .{info.vendor_id});
         const pid_str = try std.fmt.bufPrint(&pid_buf, "{X:0>4}", .{info.product_id});
 
-        // 转换产品名称和制造商名称
-        const product_name = try wcharToUtf8(allocator, info.product_string);
-        errdefer allocator.free(product_name);
+        // 尝试打开设备以获取完整的字符串信息
+        // 根据 hidapi 和 WebHID 规范，enumerate 返回的字符串可能被截断
+        var product_name: []const u8 = "";
+        var manufacturer: []const u8 = "";
+        var serial_number: []const u8 = "";
+        var got_strings = false;
 
-        const manufacturer = try wcharToUtf8(allocator, info.manufacturer_string);
-        errdefer allocator.free(manufacturer);
+        const device_handle = c.hid_open_path(info.path);
+        if (device_handle) |handle| {
+            // 设备打开成功，尝试获取完整字符串
+            defer c.hid_close(handle);
+            if (getDeviceStrings(allocator, handle)) |strings| {
+                product_name = strings.product;
+                manufacturer = strings.manufacturer;
+                serial_number = strings.serial;
+                got_strings = true;
+            } else |_| {
+                // 获取失败，后面使用 enumerate 返回的信息
+            }
+        }
 
-        const serial_number = try wcharToUtf8(allocator, info.serial_number);
-        errdefer allocator.free(serial_number);
+        // 如果没有通过打开设备获取到字符串，使用 enumerate 返回的信息
+        if (!got_strings) {
+            product_name = try wcharToUtf8(allocator, info.product_string);
+            manufacturer = try wcharToUtf8(allocator, info.manufacturer_string);
+            serial_number = try wcharToUtf8(allocator, info.serial_number);
+        }
+        errdefer {
+            allocator.free(product_name);
+            allocator.free(manufacturer);
+            allocator.free(serial_number);
+        }
 
         // 复制设备路径
         const path_len = std.mem.len(info.path);
@@ -279,8 +324,17 @@ pub fn openDeviceByVidPid(allocator: std.mem.Allocator, vid: []const u8, pid: []
 
             var priority: u16 = 5000; // 基础优先级
 
-            // 排除标准输入设备接口（鼠标/键盘），它们通常不是数据接口
-            if (dev.usage_page == 0x0001) {
+            // 优先选择厂商自定义接口（通常是 EEPROM 控制接口）
+            if (dev.usage_page == 0xFF01) {
+                // 0xFF01 通常是 Feature Report 控制接口
+                priority = 1000; // 最高优先级
+            } else if (dev.usage_page == 0xFF00) {
+                // 0xFF00 是备选厂商接口
+                priority = 1100;
+            } else if (dev.usage_page >= 0xFF02) {
+                // 其他厂商接口
+                priority = 1200;
+            } else if (dev.usage_page == 0x0001) {
                 // Generic Desktop Controls
                 if (dev.usage == 0x0002) {
                     // Mouse - 排除
@@ -292,13 +346,9 @@ pub fn openDeviceByVidPid(allocator: std.mem.Allocator, vid: []const u8, pid: []
                     // Other generic desktop
                     priority = 3000;
                 }
-            } else if (dev.usage_page >= 0xFF00) {
-                // Vendor-specific interface (0xFF00-0xFFFF)
-                // 通常是控制接口，优先级较高但不是最高
-                priority = 2000;
             } else if (dev.usage_page == 0x000C) {
                 // Consumer Control - 可能是数据接口
-                priority = 1000;
+                priority = 2000;
             } else {
                 // Other usage pages
                 priority = 3000;
@@ -335,13 +385,13 @@ pub fn openDeviceByVidPid(allocator: std.mem.Allocator, vid: []const u8, pid: []
 
 /// 关闭 HID 设备
 pub fn closeDevice(handle: *anyopaque) void {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     c.hid_close(device);
 }
 
 /// 从 HID 设备读取数据
 pub fn readDevice(handle: *anyopaque, buffer: []u8) !usize {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_read(device, buffer.ptr, buffer.len);
     if (result < 0) {
         return error.ReadFailed;
@@ -351,7 +401,7 @@ pub fn readDevice(handle: *anyopaque, buffer: []u8) !usize {
 
 /// 从 HID 设备读取数据（带超时）
 pub fn readDeviceTimeout(handle: *anyopaque, buffer: []u8, timeout_ms: i32) !usize {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_read_timeout(device, buffer.ptr, buffer.len, timeout_ms);
     if (result < 0) {
         return error.ReadFailed;
@@ -361,7 +411,7 @@ pub fn readDeviceTimeout(handle: *anyopaque, buffer: []u8, timeout_ms: i32) !usi
 
 /// 向 HID 设备写入数据
 pub fn writeDevice(handle: *anyopaque, data: []const u8) !usize {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_write(device, data.ptr, data.len);
     if (result < 0) {
         return error.WriteFailed;
@@ -371,7 +421,7 @@ pub fn writeDevice(handle: *anyopaque, data: []const u8) !usize {
 
 /// 发送 Feature Report
 pub fn sendFeatureReport(handle: *anyopaque, data: []const u8) !usize {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_send_feature_report(device, data.ptr, data.len);
     if (result < 0) {
         return error.SendFeatureFailed;
@@ -381,7 +431,7 @@ pub fn sendFeatureReport(handle: *anyopaque, data: []const u8) !usize {
 
 /// 获取 Feature Report
 pub fn getFeatureReport(handle: *anyopaque, buffer: []u8) !usize {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_get_feature_report(device, buffer.ptr, buffer.len);
     if (result < 0) {
         return error.GetFeatureFailed;
@@ -391,7 +441,7 @@ pub fn getFeatureReport(handle: *anyopaque, buffer: []u8) !usize {
 
 /// 读取数据(使用 hid_read,带超时)
 pub fn readTimeout(handle: *anyopaque, buffer: []u8, timeout_ms: c_int) !usize {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_read_timeout(device, buffer.ptr, buffer.len, timeout_ms);
     if (result < 0) {
         return error.ReadFailed;
@@ -401,7 +451,7 @@ pub fn readTimeout(handle: *anyopaque, buffer: []u8, timeout_ms: c_int) !usize {
 
 /// 获取最后的错误信息
 pub fn getError(handle: *anyopaque) []const u8 {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const err_str = c.hid_error(device);
     const len = std.mem.len(err_str);
     return err_str[0..len];
@@ -409,7 +459,7 @@ pub fn getError(handle: *anyopaque) []const u8 {
 
 /// 获取 Report Descriptor（原始字节）
 pub fn getReportDescriptor(handle: *anyopaque, buffer: []u8) !usize {
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_get_report_descriptor(device, buffer.ptr, buffer.len);
     if (result < 0) {
         return error.GetDescriptorFailed;
@@ -423,7 +473,7 @@ pub fn hasFeatureReport(handle: *anyopaque, report_id: u8) bool {
     var test_buffer: [256]u8 = undefined;
     test_buffer[0] = report_id;
 
-    const device: *c.hid_device = @ptrCast(@alignCast(handle));
+    const device: *hid_device = @ptrCast(@alignCast(handle));
     const result = c.hid_get_feature_report(device, &test_buffer, test_buffer.len);
 
     return result > 0;
