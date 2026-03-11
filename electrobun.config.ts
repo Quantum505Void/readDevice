@@ -15,6 +15,12 @@ export default {
       "renderer-dist": "views/mainview",
       "tray-icon.svg": "views/mainview/tray-icon.svg",
       "tray-icon.png": "views/mainview/tray-icon.png",
+      "icon.png": "views/mainview/icon.png",
+    },
+    platforms: {
+      linux: {
+        icon: "icon.png",
+      },
     },
   },
   runtime: {
