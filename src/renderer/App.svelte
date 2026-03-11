@@ -94,6 +94,28 @@
   }
 
   onMount(() => scanDevices());
+
+  // ── Sidebar resize ──
+  let sidebarWidth = $state(280);
+  const SIDEBAR_MIN = 200;
+  const SIDEBAR_MAX = 420;
+  let isResizing = $state(false);
+
+  function startResize(e: MouseEvent) {
+    isResizing = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (ev: MouseEvent) => {
+      sidebarWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + ev.clientX - startX));
+    };
+    const onUp = () => {
+      isResizing = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 </script>
 
 <div class="shell">
@@ -129,21 +151,36 @@
 
   <div class="body">
     <!-- ── 侧栏 ──────────────────────────────────────────────────────────── -->
-    <aside class="sidebar">
+    <aside class="sidebar" style="width:{sidebarWidth}px">
       {#if devices.length === 0 && !isScanning}
         <div class="empty-sidebar">
-          <svg viewBox="0 0 48 48" fill="none" stroke="#374151" stroke-width="1.5">
-            <rect x="4" y="12" width="40" height="28" rx="3"/>
-            <path d="M16 8h16l2 4H14z"/>
+          <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="18" y="8" width="28" height="18" rx="4" fill="#1a1b26" stroke="#2a2b36" stroke-width="1.5"/>
+            <circle cx="22" cy="17" r="2" fill="#2a2b36"/>
+            <circle cx="28" cy="17" r="2" fill="#2a2b36"/>
+            <circle cx="34" cy="17" r="2" fill="#2a2b36"/>
+            <rect x="10" y="28" width="44" height="28" rx="5" fill="#111119" stroke="#1e1f2c" stroke-width="1.5"/>
+            <line x1="32" y1="26" x2="32" y2="28" stroke="#2a2b36" stroke-width="2"/>
+            <rect x="16" y="36" width="32" height="3" rx="1.5" fill="#1e1f2c"/>
+            <rect x="16" y="43" width="20" height="3" rx="1.5" fill="#1e1f2c"/>
           </svg>
-          <p>未发现设备</p>
-          <button class="btn-link" onclick={scanDevices}>重新扫描</button>
+          <p>未发现 HID 设备</p>
+          <span class="empty-hint">连接设备后按 <kbd>F5</kbd> 刷新</span>
+          <button class="btn-link" onclick={scanDevices}>立即扫描</button>
         </div>
       {:else}
         <DeviceList label="USB 设备" list={usbDevices} bind:selected={selectedDevice} />
         <DeviceList label="蓝牙设备" list={btDevices}  bind:selected={selectedDevice} />
       {/if}
     </aside>
+
+    <!-- ── Resize handle ── -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="resize-handle"
+      class:active={isResizing}
+      onmousedown={startResize}
+    ></div>
 
     <!-- ── 主区 ──────────────────────────────────────────────────────────── -->
     <main class="main">
@@ -233,27 +270,67 @@
 
   /* ── 侧栏 ── */
   .sidebar {
-    width: 280px;
-    min-width: 220px;
+    flex-shrink: 0;
+    min-width: 200px;
+    max-width: 420px;
     background: #0f0f17;
-    border-right: 1px solid #1e1f2c;
+    border-right: none;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
   }
+  .resize-handle {
+    width: 4px;
+    background: #1a1b24;
+    cursor: col-resize;
+    flex-shrink: 0;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .resize-handle::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 40px;
+    border-radius: 2px;
+    background: #2a2b36;
+    transition: background 0.15s;
+  }
+  .resize-handle:hover,
+  .resize-handle.active { background: #22233a; }
+  .resize-handle:hover::after,
+  .resize-handle.active::after { background: #6366f1; }
+
   .empty-sidebar {
     flex: 1; display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    gap: 8px; padding: 24px; color: #374151;
+    gap: 10px; padding: 24px; color: #374151;
   }
-  .empty-sidebar svg { width: 48px; height: 48px; }
-  .empty-sidebar p { margin: 0; font-size: 13px; color: #4b5563; }
+  .empty-sidebar svg { width: 64px; height: 64px; opacity: 0.5; }
+  .empty-sidebar p { margin: 0; font-size: 14px; font-weight: 600; color: #4b5563; }
+  .empty-hint { font-size: 12px; color: #2a2b36; }
+  .empty-hint kbd {
+    display: inline-block;
+    font-size: 11px;
+    font-family: monospace;
+    background: #1a1b26;
+    border: 1px solid #2a2b35;
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: #6b7280;
+  }
   .btn-link {
     background: none; border: none;
-    color: #818cf8; font-size: 13px;
-    cursor: pointer; padding: 4px 0;
-    text-decoration: underline;
+    color: #6366f1; font-size: 12px;
+    cursor: pointer; padding: 4px 10px;
+    border: 1px solid #2a2b4a;
+    border-radius: 6px;
+    transition: background 0.12s, color 0.12s;
   }
+  .btn-link:hover { background: #16193a; color: #818cf8; }
 
   /* ── 主区 ── */
   .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
