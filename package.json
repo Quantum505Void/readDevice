@@ -6,9 +6,9 @@
   "main": "src/bun/index.ts",
   "scripts": {
     "vite:build": "vite build",
-    "start": "bun run vite:build && LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH bun run ./node_modules/.bin/electrobun dev",
-    "build": "bun run vite:build && LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH bun run ./node_modules/.bin/electrobun build",
-    "dev": "bun run vite:build && LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH bun run ./node_modules/.bin/electrobun dev"
+    "start": "bun run vite:build && bun run ./node_modules/.bin/electrobun dev",
+    "build": "bun run vite:build && bun run ./node_modules/.bin/electrobun build",
+    "dev": "bun run vite:build && bun run ./node_modules/.bin/electrobun dev"
   },
   "dependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
