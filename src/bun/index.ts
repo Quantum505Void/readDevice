@@ -398,6 +398,24 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
 // ─── 窗口管理 ─────────────────────────────────────────────────────────────────
 const DEV_SERVER_URL = "http://localhost:5173";
 
+// 启动时把 icon.png 复制到 Resources/appIcon.png（electrobun dev 模式不自动做这步）
+try {
+  const resourcesDir = join(process.cwd(), "../Resources");
+  const appIconDest = join(resourcesDir, "appIcon.png");
+  if (!fs.existsSync(appIconDest)) {
+    const srcCandidates = [
+      join(process.cwd(), "../Resources/app/views/mainview/icon.png"),
+    ];
+    for (const src of srcCandidates) {
+      if (fs.existsSync(src)) {
+        fs.mkdirSync(resourcesDir, { recursive: true });
+        fs.copyFileSync(src, appIconDest);
+        break;
+      }
+    }
+  }
+} catch { /* 忽略，不影响功能 */ }
+
 async function getMainViewUrl(): Promise<string> {
   const channel = await Updater.localInfo.channel();
   if (channel === "dev") {
