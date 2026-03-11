@@ -22,14 +22,23 @@ export type HIDDevice = {
   usagePage: number;
   usage: number;
   rawInfo: string;
-  supported: boolean;   // 是否在白名单中
-  mode?: DeviceMode;    // 读取模式（仅白名单设备有）
+  supported: boolean;
+  mode?: DeviceMode;
 };
 
 // EEPROM 数据行
 export type EEPROMRow = {
   address: number;
   hex: string;
+};
+
+// Diff 结果行
+export type DiffRow = {
+  address: number;
+  hexA: string;   // 文件 A 的 hex（空字符串表示该地址 A 没有数据）
+  hexB: string;   // 文件 B 的 hex
+  diffMask: boolean[]; // 逐字节差异掩码
+  hasDiff: boolean;
 };
 
 export type AppRPCType = {
@@ -46,6 +55,10 @@ export type AppRPCType = {
       stopReading: {
         params: Record<string, never>;
         response: { success: boolean };
+      };
+      openFileForDiff: {
+        params: Record<string, never>;
+        response: { success: boolean; filename: string; rows: EEPROMRow[]; error?: string };
       };
     };
     messages: Record<string, never>;

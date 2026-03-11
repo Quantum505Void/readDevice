@@ -390,6 +390,31 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
         isReading = false;
         return { success: true };
       },
+
+      openFileForDiff: async () => {
+        try {
+          const files = await Utils.openFileDialog({
+            allowedFileTypes: "hid",
+            canChooseFiles: true,
+            canChooseDirectory: false,
+            allowsMultipleSelection: false,
+          });
+          if (!files || files.length === 0) {
+            return { success: false, filename: "", rows: [], error: "未选择文件" };
+          }
+          const filepath = files[0];
+          const content = fs.readFileSync(filepath, "utf-8");
+          const rows: { address: number; hex: string }[] = [];
+          for (const line of content.split("\n")) {
+            const m = line.match(/^0x([0-9A-Fa-f]{4}):\s+(.+)$/);
+            if (m) rows.push({ address: parseInt(m[1], 16), hex: m[2].trim() });
+          }
+          const filename = filepath.split("/").pop() ?? filepath;
+          return { success: true, filename, rows };
+        } catch (e) {
+          return { success: false, filename: "", rows: [], error: String(e) };
+        }
+      },
     },
     messages: {},
   },

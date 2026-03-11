@@ -4,6 +4,7 @@
   import type { HIDDevice, EEPROMRow } from "../shared/types";
   import DeviceList from "./components/DeviceList.svelte";
   import EEPROMPanel from "./components/EEPROMPanel.svelte";
+  import DiffPanel from "./components/DiffPanel.svelte";
 
   // ─── 状态 ─────────────────────────────────────────────────────────────────
   let devices = $state<HIDDevice[]>([]);
@@ -13,6 +14,7 @@
   let logs = $state<string[]>([]);
   let rows = $state<EEPROMRow[]>([]);
   let progress = $state({ address: 0, totalBytes: 0, percent: 0 });
+  let activeTab = $state<"read" | "diff">("read");
   let currentFilename = $state("");
   let readDone = $state(false);
 
@@ -140,6 +142,15 @@
         {/if}
       {/if}
     </div>
+    <div class="topbar-tabs">
+      <button class="topbar-tab" class:active={activeTab === "read"} onclick={() => activeTab = "read"}>
+        读取
+      </button>
+      <button class="topbar-tab" class:active={activeTab === "diff"} onclick={() => activeTab = "diff"}>
+        对比
+        {#if rows.length > 0}<span class="tab-dot"></span>{/if}
+      </button>
+    </div>
     <button class="refresh-btn" onclick={scanDevices} disabled={isScanning} title="刷新 (F5)">
       <svg class:spin={isScanning} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M1 4v6h6M23 20v-6h-6"/>
@@ -184,18 +195,22 @@
 
     <!-- ── 主区 ──────────────────────────────────────────────────────────── -->
     <main class="main">
-      <EEPROMPanel
-        device={selectedDevice}
-        {isReading}
-        {readDone}
-        {progress}
-        {rows}
-        {logs}
-        {currentFilename}
-        onStart={startReading}
-        onStop={stopReading}
-        onExport={exportData}
-      />
+      {#if activeTab === "read"}
+        <EEPROMPanel
+          device={selectedDevice}
+          {isReading}
+          {readDone}
+          {progress}
+          {rows}
+          {logs}
+          {currentFilename}
+          onStart={startReading}
+          onStop={stopReading}
+          onExport={exportData}
+        />
+      {:else}
+        <DiffPanel currentRows={rows} currentFilename={currentFilename} />
+      {/if}
     </main>
   </div>
 </div>
@@ -250,6 +265,35 @@
   .stat { font-size: 12px; color: #4b5563; }
   .stat-num { font-weight: 600; color: #6b7280; }
   .supported-stat .stat-num { color: #818cf8; }
+  /* ── topbar tabs ── */
+  .topbar-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 16px;
+  }
+  .topbar-tab {
+    display: flex; align-items: center; gap: 5px;
+    padding: 5px 14px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    font-size: 13px; color: #4b5563;
+    cursor: pointer; transition: all 0.12s;
+  }
+  .topbar-tab:hover { color: #9ca3af; background: #111119; }
+  .topbar-tab.active {
+    color: #e2e3ea;
+    background: #1a1b26;
+    border-color: #2a2b36;
+  }
+  .tab-dot {
+    display: inline-block;
+    width: 5px; height: 5px;
+    background: #6366f1;
+    border-radius: 50%;
+  }
+
   .refresh-btn {
     margin-left: auto;
     display: flex; align-items: center; gap: 6px;
