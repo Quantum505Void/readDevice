@@ -399,7 +399,7 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
 function createWindow() {
   win = new BrowserWindow({
     title: "HID Device Reader",
-    url: "views://mainview/index.html",
+    url: process.env.DEV_SERVER ?? "views://mainview/index.html",
     frame: { width: 1400, height: 900, minWidth: 1100, minHeight: 650 },
     rpc,
   });
