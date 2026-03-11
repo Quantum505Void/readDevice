@@ -19,6 +19,12 @@ export default {
     },
     watchIgnore: ["dist/**"],
     platforms: {
+      mac: {
+        icons: "icon.iconset",
+      },
+      win: {
+        icon: "icon.ico",
+      },
       linux: {
         icon: "icon.png",
       },

@@ -5,6 +5,7 @@
     "": {
       "name": "read-device",
       "dependencies": {
+        "@noble/ciphers": "^2.1.1",
         "@sveltejs/vite-plugin-svelte": "^6.2.4",
         "concurrently": "^9.1.2",
         "electrobun": "latest",
@@ -84,6 +85,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@malept/cross-spawn-promise": ["@malept/cross-spawn-promise@1.1.1", "", { "dependencies": { "cross-spawn": "^7.0.1" } }, "sha512-RTBGWL5FWQcg9orDOCcp4LvItNzUPcyEU9bwaeJX0rJ1IQxzucC48Y0/sQLp/g6t99IQgAlGIaesJS+gTn7tVQ=="],
+
+    "@noble/ciphers": ["@noble/ciphers@2.1.1", "", {}, "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="],
 
     "@rollup/rollup-android-arm-eabi": ["@rollup/rollup-android-arm-eabi@4.59.0", "", { "os": "android", "cpu": "arm" }, "sha512-upnNBkA6ZH2VKGcBj9Fyl9IGNPULcjXRlg0LLeaioQWueH30p6IXtJEbKAgvyv+mJaMxSm1l6xwDXYjpEMiLMg=="],
 
