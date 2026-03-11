@@ -47,7 +47,7 @@
   async function scanDevices() {
     isScanning = true;
     try {
-      devices = await electroview.rpc.bun.scanDevices({});
+      devices = await electroview.rpc.request.scanDevices({});
       addLog(`🔍 扫描完成：${devices.length} 个设备，${supportedCount} 个可读取`);
     } catch (e) {
       addLog(`❌ 扫描失败: ${e}`);
@@ -64,7 +64,7 @@
     isReading = true;
     addLog(`🚀 开始读取：${selectedDevice.vendor} ${selectedDevice.product} (${selectedDevice.vid}:${selectedDevice.pid})`);
     try {
-      const res = await electroview.rpc.bun.startReading({
+      const res = await electroview.rpc.request.startReading({
         path: selectedDevice.path,
         vid: selectedDevice.vid,
         pid: selectedDevice.pid,
@@ -76,7 +76,7 @@
   }
 
   async function stopReading() {
-    await electroview.rpc.bun.stopReading({});
+    await electroview.rpc.request.stopReading({});
     isReading = false;
     addLog("⏸️ 已停止");
   }
