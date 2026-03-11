@@ -12,7 +12,7 @@ export default {
       entrypoint: "src/bun/index.ts",
     },
     copy: {
-      "src/renderer-dist": "views/mainview",
+      "renderer-dist": "views/mainview",
       "tray-icon.svg": "views/mainview/tray-icon.svg",
       "tray-icon.png": "views/mainview/tray-icon.png",
     },
