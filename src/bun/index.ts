@@ -102,30 +102,53 @@ function buildRawInfo(dev: Record<string, unknown>): string {
   ].join("\n");
 }
 
+// 从同 vid:pid 的所有接口中挑最佳（Feature Report 接口，非标准鼠标/键盘接口）
+function pickBestInterface(devs: Record<string, unknown>[]): Record<string, unknown> {
+  // usagePage=0xFF00 通用厂商接口 > usagePage≠1 > 其余
+  const vendor = devs.find(d => (d.usagePage as number) >= 0xFF00);
+  if (vendor) return vendor;
+  const nonInput = devs.find(d => (d.usagePage as number) !== 1);
+  if (nonInput) return nonInput;
+  // 同 usagePage=1 时，优先选非 mouse(2)/keyboard(6)
+  const nonMK = devs.find(d => (d.usage as number) !== 2 && (d.usage as number) !== 6);
+  if (nonMK) return nonMK;
+  return devs[0];
+}
+
 async function scanDevices(): Promise<HIDDevice[]> {
   const hid = await loadHID();
   if (!hid) return [];
-  const seen = new Set<string>();
-  const result: HIDDevice[] = [];
+
+  // 按 vid:pid:serial:isBT 分组，同一物理设备的多个接口合并
+  const groups = new Map<string, Record<string, unknown>[]>();
   for (const dev of hid.devices() as Record<string, unknown>[]) {
     const vid = ((dev.vendorId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase();
     const pid = ((dev.productId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase();
     if (vid === "0000" && pid === "0000") continue;
     const serial = (dev.serialNumber as string)?.trim() || "N/A";
-    const key = `${vid}:${pid}:${serial}:${dev.path}:${dev.interface}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const bt = isBT(dev) ? "bt" : "usb";
+    const groupKey = `${vid}:${pid}:${serial}:${bt}`;
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey)!.push(dev);
+  }
+
+  const result: HIDDevice[] = [];
+  for (const devs of groups.values()) {
+    const best = pickBestInterface(devs);
+    const vid = ((best.vendorId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase();
+    const pid = ((best.productId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase();
+    const serial = (best.serialNumber as string)?.trim() || "N/A";
     const wl = findWhitelist(vid, pid);
     result.push({
       vid, pid,
-      vendor: vendor(dev),
-      product: ((dev.product as string)?.trim()) || `HID ${vid}:${pid}`,
+      vendor: vendor(best),
+      product: ((best.product as string)?.trim()) || `HID ${vid}:${pid}`,
       serial,
-      isBluetooth: isBT(dev),
-      path: (dev.path as string) ?? "",
-      usagePage: (dev.usagePage as number) ?? 0,
-      usage: (dev.usage as number) ?? 0,
-      rawInfo: buildRawInfo(dev),
+      isBluetooth: isBT(best),
+      path: (best.path as string) ?? "",
+      usagePage: (best.usagePage as number) ?? 0,
+      usage: (best.usage as number) ?? 0,
+      rawInfo: buildRawInfo(best),
       supported: !!wl,
       mode: wl?.mode,
     });
