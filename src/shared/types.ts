@@ -68,6 +68,14 @@ export type AppRPCType = {
         params: Record<string, never>;
         response: { success: boolean };
       };
+      getSaveDir: {
+        params: Record<string, never>;
+        response: { dir: string };
+      };
+      chooseSaveDir: {
+        params: Record<string, never>;
+        response: { success: boolean; dir: string; error?: string };
+      };
     };
     messages: Record<string, never>;
   }>;

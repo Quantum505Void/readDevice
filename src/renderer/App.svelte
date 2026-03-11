@@ -18,6 +18,7 @@
   let diffBadge = $state(0);
   let currentFilename = $state("");
   let readDone = $state(false);
+  let saveDir = $state("");
 
   let usbDevices = $derived(devices.filter(d => !d.isBluetooth));
   let btDevices  = $derived(devices.filter(d => d.isBluetooth));
@@ -47,6 +48,14 @@
   });
 
   // ─── 扫描 ─────────────────────────────────────────────────────────────────
+  async function changeSaveDir() {
+    const res = await electroview.rpc.request.chooseSaveDir({});
+    if (res.success) {
+      saveDir = res.dir;
+      addLog(`📁 存储目录已更改为：${res.dir}`);
+    }
+  }
+
   async function scanDevices() {
     isScanning = true;
     try {
@@ -98,6 +107,8 @@
 
   onMount(async () => {
     await scanDevices();
+    const cfg = await electroview.rpc.request.getSaveDir({});
+    saveDir = cfg.dir;
     setDeviceChangedHandler(async ({ added, removed, addedIds, removedIds }) => {
       console.log("[renderer] devicesUpdated", { added, removed });
       devices = await electroview.rpc.request.scanDevices({});
@@ -180,6 +191,12 @@
       </svg>
       {isScanning ? "扫描中…" : "刷新"}
     </button>
+    <!-- 存储目录 -->
+    <div class="savedir-bar" title={saveDir}>
+      <span class="savedir-label">📁</span>
+      <span class="savedir-path">{saveDir || "…"}</span>
+      <button class="savedir-btn" onclick={changeSaveDir} title="更改存储目录">更改</button>
+    </div>
   </header>
 
   <div class="body">
@@ -333,6 +350,27 @@
   .refresh-btn:hover:not(:disabled) { background: #22233a; color: #e2e3ea; }
   .refresh-btn:disabled { opacity: 0.4; cursor: default; }
   .refresh-btn svg { width: 14px; height: 14px; }
+
+  /* ── 存储目录 ── */
+  .savedir-bar {
+    display: flex; align-items: center; gap: 6px;
+    max-width: 320px; min-width: 0;
+    background: #0f0f18; border: 1px solid #1e1f2c;
+    border-radius: 6px; padding: 0 8px 0 10px; height: 28px;
+    overflow: hidden;
+  }
+  .savedir-label { font-size: 12px; flex-shrink: 0; }
+  .savedir-path {
+    font-size: 11px; font-family: monospace; color: #4b5563;
+    flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    direction: rtl; text-align: left;
+  }
+  .savedir-btn {
+    font-size: 11px; padding: 2px 8px; flex-shrink: 0;
+    background: #1a1b26; border: 1px solid #2a2b36;
+    color: #6b7280; border-radius: 4px; cursor: pointer; transition: all .1s;
+  }
+  .savedir-btn:hover { background: #22233a; color: #818cf8; border-color: #4f46e5; }
   :global(.spin) { animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 

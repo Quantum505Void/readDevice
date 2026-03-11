@@ -290,7 +290,24 @@ async function readDeviceType9(device: import("node-hid").HID, onData: (addr: nu
   return totalBytes;
 }
 
-// ─── 状态 ─────────────────────────────────────────────────────────────────────
+// ─── 配置持久化 ───────────────────────────────────────────────────────────────
+const CONFIG_DIR  = join(process.env.HOME ?? ".", ".config", "readDevice");
+const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+
+function loadConfig(): { saveDir: string } {
+  try {
+    const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return { saveDir: join(process.env.HOME ?? ".", "Documents", "HIDData") };
+  }
+}
+function saveConfig(cfg: { saveDir: string }) {
+  try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); } catch {}
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf-8");
+}
+
+let appConfig = loadConfig();
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
@@ -334,6 +351,26 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
         return { success: true };
       },
 
+      getSaveDir: async () => ({ dir: appConfig.saveDir }),
+
+      chooseSaveDir: async () => {
+        try {
+          const files = await Utils.openFileDialog({
+            allowedFileTypes: "",
+            canChooseFiles: false,
+            canChooseDirectory: true,
+            allowsMultipleSelection: false,
+          });
+          if (!files || files.length === 0) return { success: false, dir: appConfig.saveDir, error: "未选择" };
+          const dir = files[0];
+          appConfig.saveDir = dir;
+          saveConfig(appConfig);
+          return { success: true, dir };
+        } catch (e) {
+          return { success: false, dir: appConfig.saveDir, error: String(e) };
+        }
+      },
+
       startReading: async ({ path, vid, pid }) => {
         if (isReading) return { success: false, error: "Already reading" };
 
@@ -346,8 +383,8 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
         // 确保 data 目录存在
         try { fs.mkdirSync("data", { recursive: true }); } catch {}
 
-        // 保存到用户主目录下的 Documents/HIDData，方便找到
-        const dataDir = join(process.env.HOME ?? ".", "Documents", "HIDData");
+        // 保存到用户配置的目录
+        const dataDir = appConfig.saveDir;
         try { fs.mkdirSync(dataDir, { recursive: true }); } catch {}
         const ts = Date.now();
         const filename = join(dataDir, `device_data_${ts}.hid`);
