@@ -15,7 +15,6 @@ export default {
       "dist/index.html": "views/mainview/index.html",
       "dist/assets": "views/mainview/assets",
       "tray-icon.svg": "views/mainview/tray-icon.svg",
-      "tray-icon.png": "views/mainview/tray-icon.png",
       "icon.png": "views/mainview/icon.png",
     },
     watchIgnore: ["dist/**"],
