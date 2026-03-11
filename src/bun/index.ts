@@ -1,4 +1,4 @@
-import { BrowserWindow, BrowserView, Tray, Utils } from "electrobun/bun";
+import { BrowserWindow, BrowserView, Tray, Utils, GlobalShortcut } from "electrobun/bun";
 import type { AppRPCType, HIDDevice, WhitelistDevice, DeviceMode } from "../shared/types";
 import { join } from "path";
 import net from "net";
@@ -454,6 +454,9 @@ try {
 } catch (e) {
   console.warn("托盘初始化失败:", e);
 }
+
+// ─── 快捷键 ──────────────────────────────────────────────────────────────────
+GlobalShortcut.register("F12", () => { win?.webview.toggleDevTools(); });
 
 // ─── 启动 ─────────────────────────────────────────────────────────────────────
 createWindow();
