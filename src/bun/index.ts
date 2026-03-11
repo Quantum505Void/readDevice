@@ -295,12 +295,44 @@ let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 
+// ─── 热插拔监控 ───────────────────────────────────────────────────────────────
+let monitorInterval: ReturnType<typeof setInterval> | null = null;
+let lastDeviceIds = new Set<string>();
+
+function deviceKey(d: HIDDevice) { return `${d.vid}:${d.pid}:${d.path}`; }
+
+function startMonitor() {
+  if (monitorInterval) return;
+  console.log("[bun] hotplug monitor started");
+  monitorInterval = setInterval(async () => {
+    try {
+      const devices = await scanDevices();
+      const currentIds = new Set(devices.map(deviceKey));
+      const added   = [...currentIds].filter(id => !lastDeviceIds.has(id));
+      const removed = [...lastDeviceIds].filter(id => !currentIds.has(id));
+      if (added.length === 0 && removed.length === 0) return;
+      console.log(`[bun] hotplug: +${added.length} -${removed.length}`);
+      lastDeviceIds = currentIds;
+      win?.webview.rpc.send.devicesUpdated({ added: added.length, removed: removed.length, addedIds: added, removedIds: removed });
+    } catch (e) { console.error("[bun] monitor error:", e); }
+  }, 2000);
+}
+
 // ─── RPC ──────────────────────────────────────────────────────────────────────
 const rpc = BrowserView.defineRPC<AppRPCType>({
   maxRequestTime: 120000,
   handlers: {
     requests: {
-      scanDevices: async () => scanDevices(),
+      scanDevices: async () => {
+        const devices = await scanDevices();
+        lastDeviceIds = new Set(devices.map(deviceKey));
+        return devices;
+      },
+
+      webviewReady: async () => {
+        startMonitor();
+        return { success: true };
+      },
 
       startReading: async ({ path, vid, pid }) => {
         if (isReading) return { success: false, error: "Already reading" };

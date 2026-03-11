@@ -64,6 +64,10 @@ export type AppRPCType = {
         params: { content: string; filename: string };
         response: { success: boolean; savedPath?: string; error?: string };
       };
+      webviewReady: {
+        params: Record<string, never>;
+        response: { success: boolean };
+      };
     };
     messages: Record<string, never>;
   }>;
@@ -75,6 +79,7 @@ export type AppRPCType = {
       progress: { address: number; totalBytes: number; percent: number };
       readComplete: { totalBytes: number; filename: string };
       readError: { message: string };
+      devicesUpdated: { added: number; removed: number; addedIds: string[]; removedIds: string[] };
     };
   }>;
 };

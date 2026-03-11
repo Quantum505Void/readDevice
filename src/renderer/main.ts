@@ -9,17 +9,21 @@ type ProgressCallback = (addr: number, total: number, pct: number) => void;
 type ReadCompleteCallback = (totalBytes: number, filename: string) => void;
 type ReadErrorCallback = (msg: string) => void;
 
+type DeviceChangedCallback = (p: { added: number; removed: number; addedIds: string[]; removedIds: string[] }) => void;
+
 let _onLog: LogCallback | null = null;
 let _onDataRow: DataRowCallback | null = null;
 let _onProgress: ProgressCallback | null = null;
 let _onReadComplete: ReadCompleteCallback | null = null;
 let _onReadError: ReadErrorCallback | null = null;
+let _onDeviceChanged: DeviceChangedCallback | null = null;
 
 export function setLogHandler(cb: LogCallback) { _onLog = cb; }
 export function setDataRowHandler(cb: DataRowCallback) { _onDataRow = cb; }
 export function setProgressHandler(cb: ProgressCallback) { _onProgress = cb; }
 export function setReadCompleteHandler(cb: ReadCompleteCallback) { _onReadComplete = cb; }
 export function setReadErrorHandler(cb: ReadErrorCallback) { _onReadError = cb; }
+export function setDeviceChangedHandler(cb: DeviceChangedCallback) { _onDeviceChanged = cb; }
 
 export const rpcInstance = Electroview.defineRPC<AppRPCType>({
   handlers: {
@@ -30,6 +34,7 @@ export const rpcInstance = Electroview.defineRPC<AppRPCType>({
       progress: ({ address, totalBytes, percent }) => _onProgress?.(address, totalBytes, percent),
       readComplete: ({ totalBytes, filename }) => _onReadComplete?.(totalBytes, filename),
       readError: ({ message }) => _onReadError?.(message),
+      devicesUpdated: (p) => _onDeviceChanged?.(p),
     },
   },
 });

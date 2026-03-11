@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { electroview, setLogHandler, setDataRowHandler, setProgressHandler, setReadCompleteHandler, setReadErrorHandler } from "./main.ts";
+  import { electroview, setLogHandler, setDataRowHandler, setProgressHandler, setReadCompleteHandler, setReadErrorHandler, setDeviceChangedHandler } from "./main.ts";
   import type { HIDDevice, EEPROMRow } from "../shared/types";
   import DeviceList from "./components/DeviceList.svelte";
   import EEPROMPanel from "./components/EEPROMPanel.svelte";
@@ -96,7 +96,24 @@
     addLog(`📤 已导出 ${rows.length} 行数据`);
   }
 
-  onMount(() => scanDevices());
+  onMount(async () => {
+    await scanDevices();
+    setDeviceChangedHandler(async ({ added, removed, addedIds, removedIds }) => {
+      console.log("[renderer] devicesUpdated", { added, removed });
+      devices = await electroview.rpc.request.scanDevices({});
+      if (added > 0) addLog(`🔌 +${added} 设备插入`);
+      if (removed > 0) {
+        addLog(`🔌 -${removed} 设备移除`);
+        // 被移除的设备如果正在读取，停止
+        if (selectedDevice && removedIds.includes(`${selectedDevice.vid}:${selectedDevice.pid}:${selectedDevice.path}`)) {
+          if (isReading) await electroview.rpc.request.stopReading({});
+          selectedDevice = null;
+          addLog("⚠️ 当前设备已断开");
+        }
+      }
+    });
+    await electroview.rpc.request.webviewReady({});
+  });
 
   // ── Sidebar resize ──
   let sidebarWidth = $state(280);
