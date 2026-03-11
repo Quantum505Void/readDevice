@@ -32,6 +32,23 @@
   let autoScroll = $state(true);
   let copiedAddr = $state<number | null>(null);
 
+  // 计时器
+  let elapsed = $state(0);
+  let timerHandle = $state<ReturnType<typeof setInterval> | null>(null);
+  let startTime = $state<number>(0);
+
+  $effect(() => {
+    if (isReading && !timerHandle) {
+      startTime = Date.now();
+      elapsed = 0;
+      timerHandle = setInterval(() => { elapsed = (Date.now() - startTime) / 1000; }, 200);
+    }
+    if (!isReading && timerHandle) {
+      clearInterval(timerHandle);
+      timerHandle = null;
+    }
+  });
+
   $effect(() => {
     if (logs.length && autoScroll && logEl) logEl.scrollTop = logEl.scrollHeight;
   });
@@ -60,12 +77,24 @@
   function splitHex(hex: string): string[] {
     return hex.trim().split(/\s+/).filter(Boolean);
   }
+
+  // 把 hex 行转为可打印 ASCII 字符串
+  function toAscii(hex: string): string {
+    return splitHex(hex).map(b => {
+      const v = parseInt(b, 16);
+      return v >= 0x20 && v <= 0x7e ? String.fromCharCode(v) : "·";
+    }).join("");
+  }
+
+  function fmtElapsed(s: number): string {
+    if (s < 60) return `${s.toFixed(1)}s`;
+    return `${Math.floor(s / 60)}m ${(s % 60).toFixed(0)}s`;
+  }
 </script>
 
 <div class="panel">
   <!-- ── 工具栏 ──────────────────────────────────────────────────────── -->
   <div class="toolbar">
-    <!-- 设备信息 -->
     <div class="dev-info">
       {#if device}
         <div class="dev-main">
@@ -82,7 +111,6 @@
       {/if}
     </div>
 
-    <!-- 操作按钮 -->
     <div class="actions">
       {#if !isReading}
         <button class="btn btn-start" disabled={!device?.supported || isReading} onclick={onStart}>
@@ -93,6 +121,7 @@
         <div class="reading-indicator">
           <span class="pulse-dot"></span>
           <span>读取中…</span>
+          <span class="timer">{fmtElapsed(elapsed)}</span>
         </div>
         <button class="btn btn-stop" onclick={onStop}>
           <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
@@ -129,12 +158,7 @@
     </div>
 
     <div class="progress-track">
-      <div
-        class="progress-fill"
-        class:done={readDone}
-        style="width: {progress.percent}%"
-      ></div>
-      <!-- 分段刻度 -->
+      <div class="progress-fill" class:done={readDone} style="width: {progress.percent}%"></div>
       {#each [1024, 2048, 3072] as mark}
         <div class="tick" style="left: {(mark / EEP_SIZE) * 100}%"></div>
       {/each}
@@ -165,7 +189,6 @@
         <span class="tab-badge">{logs.length}</span>
       {/if}
     </button>
-
     {#if activeTab === "log"}
       <label class="auto-scroll">
         <input type="checkbox" bind:checked={autoScroll} />
@@ -200,6 +223,7 @@
               <tr>
                 <th class="th-addr">地址</th>
                 <th class="th-hex">十六进制（32 bytes）</th>
+                <th class="th-ascii">ASCII</th>
                 <th class="th-action"></th>
               </tr>
             </thead>
@@ -217,6 +241,7 @@
                       {/if}
                     {/each}
                   </td>
+                  <td class="td-ascii">{toAscii(row.hex)}</td>
                   <td class="td-action">
                     <button
                       class="copy-btn"
@@ -242,9 +267,7 @@
           </table>
         </div>
       {/if}
-
     {:else}
-      <!-- 日志 -->
       <div class="log-wrap" bind:this={logEl}>
         {#if logs.length === 0}
           <div class="log-empty">暂无日志</div>
@@ -261,6 +284,53 @@
         {/if}
       </div>
     {/if}
+  </div>
+
+  <!-- ── 状态栏 ─────────────────────────────────────────────────────────── -->
+  <div class="statusbar">
+    <div class="sb-left">
+      {#if device}
+        <span class="sb-item">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="1" y="5" width="14" height="9" rx="1.5"/>
+            <path d="M5 3h6l1 2H4z"/>
+          </svg>
+          {device.vendor !== "未知厂商" ? device.vendor : device.vid}
+        </span>
+        <span class="sb-sep">·</span>
+        <span class="sb-item">{device.product}</span>
+      {:else}
+        <span class="sb-item muted">无设备</span>
+      {/if}
+    </div>
+    <div class="sb-right">
+      {#if rows.length > 0}
+        <span class="sb-item">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="2" width="12" height="12" rx="1.5"/>
+            <path d="M5 6h6M5 9h4"/>
+          </svg>
+          {rows.length * 32} bytes
+        </span>
+        <span class="sb-sep">·</span>
+        <span class="sb-item">{rows.length} 行</span>
+      {/if}
+      {#if readDone && elapsed > 0}
+        <span class="sb-sep">·</span>
+        <span class="sb-item ok-text">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="8" cy="8" r="6"/>
+            <polyline points="5 8 7 10 11 6"/>
+          </svg>
+          {fmtElapsed(elapsed)}
+        </span>
+      {/if}
+      {#if isReading}
+        <span class="sb-item pulse-text">
+          {progress.percent.toFixed(0)}% · {fmtElapsed(elapsed)}
+        </span>
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -300,6 +370,7 @@
     display: flex; align-items: center; gap: 6px;
     font-size: 13px; color: #818cf8;
   }
+  .timer { font-family: monospace; font-size: 12px; color: #6366f1; }
   .pulse-dot {
     width: 7px; height: 7px; border-radius: 50%;
     background: #818cf8;
@@ -321,7 +392,6 @@
   .btn-start {
     background: linear-gradient(135deg, #4f46e5, #7c3aed);
     color: #fff;
-    box-shadow: 0 0 0 0 #6366f144;
   }
   .btn-start:hover:not(:disabled) {
     background: linear-gradient(135deg, #4338ca, #6d28d9);
@@ -351,8 +421,7 @@
   }
   .done-badge {
     font-size: 10px; color: #22c55e; background: #0d2418;
-    border: 1px solid #166534; border-radius: 4px;
-    padding: 1px 6px;
+    border: 1px solid #166534; border-radius: 4px; padding: 1px 6px;
   }
   .progress-meta {
     display: flex; align-items: center; gap: 4px;
@@ -379,7 +448,6 @@
     width: 1px; background: #0d0d15;
     pointer-events: none;
   }
-
   .filename {
     display: flex; align-items: center; gap: 5px;
     margin-top: 5px;
@@ -412,7 +480,6 @@
     border-radius: 8px; padding: 1px 5px;
   }
   .tab.active .tab-badge { background: #16193a; color: #818cf8; }
-
   .auto-scroll {
     margin-left: auto;
     display: flex; align-items: center; gap: 5px;
@@ -435,9 +502,8 @@
   /* ── HEX 表格 ── */
   .hex-table-wrap { flex: 1; overflow: auto; }
   .hex-table { width: 100%; border-collapse: collapse; }
-
   .hex-table thead { position: sticky; top: 0; z-index: 1; background: #101018; }
-  .th-addr, .th-hex, .th-action {
+  .th-addr, .th-hex, .th-ascii, .th-action {
     padding: 7px 12px;
     font-size: 10.5px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.06em; color: #374151;
@@ -445,6 +511,7 @@
     text-align: left;
   }
   .th-addr { width: 80px; }
+  .th-ascii { width: 200px; color: #2d3748; }
   .th-action { width: 36px; }
 
   .hex-row { transition: background 0.08s; }
@@ -465,15 +532,23 @@
     font-size: 12px;
     display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
   }
+  .td-ascii {
+    padding: 5px 12px;
+    border-bottom: 1px solid #0f1018;
+    font-family: "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 11px;
+    color: #3d4566;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    border-left: 1px solid #1a1b26;
+  }
+  .hex-row:hover .td-ascii { color: #5a6080; }
   .td-action { padding: 5px 8px; border-bottom: 1px solid #0f1018; }
 
   /* 字节颜色 */
   .byte {
-    display: inline-block;
-    min-width: 22px;
-    text-align: center;
-    border-radius: 3px;
-    padding: 0 1px;
+    display: inline-block; min-width: 22px;
+    text-align: center; border-radius: 3px; padding: 0 1px;
   }
   .byte.zero { color: #2a2b36; }
   .byte.ff { color: #f59e0b; }
@@ -505,8 +580,35 @@
     color: #4b5563; padding: 2px 0; line-height: 1.6;
     white-space: pre-wrap; word-break: break-all;
   }
-  .log-line.err { color: #ef4444; }
-  .log-line.ok  { color: #22c55e; }
+  .log-line.err  { color: #ef4444; }
+  .log-line.ok   { color: #22c55e; }
   .log-line.warn { color: #f59e0b; }
   .log-line.info { color: #818cf8; }
+
+  /* ── 状态栏 ── */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 24px; padding: 0 14px;
+    background: #090910;
+    border-top: 1px solid #16161f;
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+  .sb-left, .sb-right { display: flex; align-items: center; gap: 6px; }
+  .sb-item {
+    display: flex; align-items: center; gap: 4px;
+    color: #2d3748;
+  }
+  .sb-item svg { width: 11px; height: 11px; }
+  .sb-sep { color: #1e1f2c; }
+  .sb-item.muted { color: #1e1f2c; }
+  .ok-text { color: #16a34a; }
+  .pulse-text {
+    color: #6366f1;
+    animation: textpulse 1.4s ease-in-out infinite;
+  }
+  @keyframes textpulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
 </style>
