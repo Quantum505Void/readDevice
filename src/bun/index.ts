@@ -346,8 +346,11 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
         // 确保 data 目录存在
         try { fs.mkdirSync("data", { recursive: true }); } catch {}
 
+        // 保存到用户主目录下的 Documents/HIDData，方便找到
+        const dataDir = join(process.env.HOME ?? ".", "Documents", "HIDData");
+        try { fs.mkdirSync(dataDir, { recursive: true }); } catch {}
         const ts = Date.now();
-        const filename = `data/device_data_${ts}.hid`;
+        const filename = join(dataDir, `device_data_${ts}.hid`);
 
         // 通知前端文件名
         win?.webview.rpc.send.log({ message: `📁 数据将保存到: ${filename}` });
@@ -359,6 +362,7 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
         // 在后台执行读取
         (async () => {
           let device: import("node-hid").HID | null = null;
+          let fileStream: import("fs").WriteStream | null = null;
           try {
             // 打开设备（按 VID/PID，选最佳接口）
             const allDevs = hid.devices().filter(
@@ -382,7 +386,7 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
             }
 
             // 数据文件句柄
-            const fileStream = fs.createWriteStream(filename);
+            fileStream = fs.createWriteStream(filename);
 
             const onData = (addr: number, data: Buffer) => {
               const hex = [...data].map(b => b.toString(16).padStart(2, "0")).join(" ");
@@ -408,6 +412,8 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
             const msg = e instanceof Error ? e.message : String(e);
             win?.webview.rpc.send.readError({ message: msg });
             win?.webview.rpc.send.log({ message: `❌ 读取失败: ${msg}` });
+            // 确保文件句柄关闭，保留已写入的部分数据
+            try { fileStream?.end(); } catch {}
           } finally {
             try { device?.close(); } catch {}
             isReading = false;
