@@ -32,6 +32,23 @@
   let autoScroll = $state(true);
   let copiedAddr = $state<number | null>(null);
 
+  // ── 跳转 ──
+  let jumpInput = $state("");
+  let jumpError = $state("");
+  let hexTableWrap = $state<HTMLElement | null>(null);
+
+  function jumpToAddr() {
+    const v = parseInt(jumpInput.replace(/^0x/i, ""), 16);
+    if (isNaN(v)) { jumpError = "?"; setTimeout(() => jumpError = "", 1200); return; }
+    if (!hexTableWrap) return;
+    const el = hexTableWrap.querySelector(`[data-addr="${v}"]`) as HTMLElement | null;
+    if (!el) { jumpError = "不存在"; setTimeout(() => jumpError = "", 1200); return; }
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("jump-flash");
+    setTimeout(() => el.classList.remove("jump-flash"), 900);
+    jumpError = "";
+  }
+
   // 计时器
   let elapsed = $state(0);
   let timerHandle = $state<ReturnType<typeof setInterval> | null>(null);
@@ -53,8 +70,8 @@
     if (logs.length && autoScroll && logEl) logEl.scrollTop = logEl.scrollHeight;
   });
   $effect(() => {
-    if (rows.length && activeTab === "data" && dataEl) {
-      dataEl.scrollTop = dataEl.scrollHeight;
+    if (rows.length && activeTab === "data" && hexTableWrap) {
+      hexTableWrap.scrollTop = hexTableWrap.scrollHeight;
     }
   });
 
@@ -195,6 +212,22 @@
         自动滚动
       </label>
     {/if}
+    {#if activeTab === "data" && rows.length > 0}
+      <div class="jump-box" class:err={!!jumpError}>
+        <span class="jump-pfx">0x</span>
+        <input
+          class="jump-input"
+          type="text"
+          placeholder="0100"
+          maxlength="4"
+          bind:value={jumpInput}
+          onkeydown={(e) => e.key === "Enter" && jumpToAddr()}
+          title="输入地址跳转，按 Enter"
+        />
+        <button class="jump-btn" onclick={jumpToAddr} title="跳转">→</button>
+        {#if jumpError}<span class="jump-err">{jumpError}</span>{/if}
+      </div>
+    {/if}
   </div>
 
   <!-- ── 内容区 ─────────────────────────────────────────────────────────── -->
@@ -217,7 +250,7 @@
           {/if}
         </div>
       {:else}
-        <div class="hex-table-wrap" bind:this={dataEl}>
+        <div class="hex-table-wrap" bind:this={hexTableWrap}>
           <table class="hex-table">
             <thead>
               <tr>
@@ -229,7 +262,7 @@
             </thead>
             <tbody>
               {#each rows as row (row.address)}
-                <tr class="hex-row">
+                <tr class="hex-row" data-addr={row.address}>
                   <td class="td-addr">
                     0x{row.address.toString(16).padStart(4, "0").toUpperCase()}
                   </td>
@@ -485,6 +518,37 @@
     display: flex; align-items: center; gap: 5px;
     font-size: 12px; color: #374151; cursor: pointer;
   }
+  /* ── 跳转 ── */
+  .jump-box {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 0;
+    background: #1a1b26; border: 1px solid #2a2b36;
+    border-radius: 6px; overflow: hidden;
+    font-size: 12px;
+    transition: border-color .1s;
+  }
+  .jump-box.err { border-color: #5c2626; }
+  .jump-pfx { padding: 0 4px 0 8px; color: #374151; font-family: monospace; }
+  .jump-input {
+    width: 52px; background: transparent; border: none;
+    color: #a5b4fc; font-family: monospace; font-size: 12px;
+    padding: 4px 2px; outline: none;
+  }
+  .jump-btn {
+    padding: 4px 8px; background: #22233a; border: none;
+    color: #6b7280; cursor: pointer; font-size: 12px;
+    transition: all .1s;
+  }
+  .jump-btn:hover { background: #4f46e5; color: #fff; }
+  .jump-err { padding: 0 6px; color: #f87171; font-size: 11px; }
+
+  :global(.jump-flash) {
+    animation: jumphl .7s ease-out;
+  }
+  @keyframes jumphl {
+    0%   { background: rgba(99,102,241,.35); }
+    100% { background: transparent; }
+  }
 
   /* ── 内容区 ── */
   .content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
@@ -500,7 +564,15 @@
   .empty .sub { font-size: 11px; color: #2a2b36; }
 
   /* ── HEX 表格 ── */
-  .hex-table-wrap { flex: 1; overflow: auto; }
+  .hex-table-wrap {
+    flex: 1; overflow: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #1e1f2c #0d0d12;
+  }
+  .hex-table-wrap::-webkit-scrollbar { width: 6px; height: 6px; }
+  .hex-table-wrap::-webkit-scrollbar-track { background: #0d0d12; }
+  .hex-table-wrap::-webkit-scrollbar-thumb { background: #1e1f2c; border-radius: 3px; }
+  .hex-table-wrap::-webkit-scrollbar-thumb:hover { background: #2a2b36; }
   .hex-table { width: 100%; border-collapse: collapse; }
   .hex-table thead { position: sticky; top: 0; z-index: 1; background: #101018; }
   .th-addr, .th-hex, .th-ascii, .th-action {
@@ -574,7 +646,13 @@
     padding: 10px 14px;
     font-family: "JetBrains Mono", "Cascadia Code", monospace;
     font-size: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: #1e1f2c #0d0d12;
   }
+  .log-wrap::-webkit-scrollbar { width: 6px; }
+  .log-wrap::-webkit-scrollbar-track { background: #0d0d12; }
+  .log-wrap::-webkit-scrollbar-thumb { background: #1e1f2c; border-radius: 3px; }
+  .log-wrap::-webkit-scrollbar-thumb:hover { background: #2a2b36; }
   .log-empty { color: #2a2b36; text-align: center; padding: 24px; }
   .log-line {
     color: #4b5563; padding: 2px 0; line-height: 1.6;

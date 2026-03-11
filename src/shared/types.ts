@@ -60,6 +60,10 @@ export type AppRPCType = {
         params: Record<string, never>;
         response: { success: boolean; filename: string; rows: EEPROMRow[]; error?: string };
       };
+      saveDiffReport: {
+        params: { content: string; filename: string };
+        response: { success: boolean; savedPath?: string; error?: string };
+      };
     };
     messages: Record<string, never>;
   }>;

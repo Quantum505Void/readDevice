@@ -15,6 +15,7 @@
   let rows = $state<EEPROMRow[]>([]);
   let progress = $state({ address: 0, totalBytes: 0, percent: 0 });
   let activeTab = $state<"read" | "diff">("read");
+  let diffBadge = $state(0);
   let currentFilename = $state("");
   let readDone = $state(false);
 
@@ -148,7 +149,11 @@
       </button>
       <button class="topbar-tab" class:active={activeTab === "diff"} onclick={() => activeTab = "diff"}>
         对比
-        {#if rows.length > 0}<span class="tab-dot"></span>{/if}
+        {#if diffBadge > 0}
+          <span class="tab-badge-red">{diffBadge}</span>
+        {:else if rows.length > 0}
+          <span class="tab-dot"></span>
+        {/if}
       </button>
     </div>
     <button class="refresh-btn" onclick={scanDevices} disabled={isScanning} title="刷新 (F5)">
@@ -209,7 +214,7 @@
           onExport={exportData}
         />
       {:else}
-        <DiffPanel currentRows={rows} currentFilename={currentFilename} />
+        <DiffPanel currentRows={rows} currentFilename={currentFilename} onDiffCount={(n) => diffBadge = n} />
       {/if}
     </main>
   </div>
@@ -292,6 +297,11 @@
     width: 5px; height: 5px;
     background: #6366f1;
     border-radius: 50%;
+  }
+  .tab-badge-red {
+    font-size: 10px; background: #3b1f1f; color: #f87171;
+    border-radius: 8px; padding: 1px 6px;
+    font-weight: 600;
   }
 
   .refresh-btn {

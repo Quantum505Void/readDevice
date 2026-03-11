@@ -415,6 +415,17 @@ const rpc = BrowserView.defineRPC<AppRPCType>({
           return { success: false, filename: "", rows: [], error: String(e) };
         }
       },
+
+      saveDiffReport: async ({ content, filename }) => {
+        try {
+          try { fs.mkdirSync("data", { recursive: true }); } catch {}
+          const filepath = `data/${filename}`;
+          fs.writeFileSync(filepath, content, "utf-8");
+          return { success: true, savedPath: filepath };
+        } catch (e) {
+          return { success: false, error: String(e) };
+        }
+      },
     },
     messages: {},
   },
