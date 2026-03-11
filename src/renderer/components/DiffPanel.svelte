@@ -33,10 +33,20 @@
     errorMsg = "";
     try {
       const res = await electroview.rpc.request.openFileForDiff({});
-      if (!res.success) { errorMsg = res.error ?? "打开失败"; return; }
+      if (!res.success) {
+        // 用户取消选择，不算错误
+        if (!res.error || res.error === "未选择文件") return;
+        errorMsg = res.error;
+        return;
+      }
       const data = { name: res.filename, rows: res.rows };
       if (side === "A") fileA = data; else fileB = data;
-    } catch (e) { errorMsg = String(e); }
+    } catch (e) {
+      const msg = String(e);
+      // RPC 超时 = 文件选择对话框被长时间搁置或取消，不报错
+      if (msg.includes("timed out") || msg.includes("timeout")) return;
+      errorMsg = msg;
+    }
     finally { if (side === "A") loadingA = false; else loadingB = false; }
   }
 

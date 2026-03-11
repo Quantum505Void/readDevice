@@ -297,7 +297,7 @@ let isQuitting = false;
 
 // ─── RPC ──────────────────────────────────────────────────────────────────────
 const rpc = BrowserView.defineRPC<AppRPCType>({
-  maxRequestTime: 10000,
+  maxRequestTime: 120000,
   handlers: {
     requests: {
       scanDevices: async () => scanDevices(),
