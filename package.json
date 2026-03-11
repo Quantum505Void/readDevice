@@ -5,11 +5,11 @@
   "type": "module",
   "main": "src/bun/index.ts",
   "scripts": {
-    "vite:build": "vite build",
-    "vite:dev": "vite dev --port 5173",
-    "start": "bun run vite:build && bun run ./node_modules/.bin/electrobun dev",
-    "build": "bun run vite:build && bun run ./node_modules/.bin/electrobun build",
-    "dev": "DEV_SERVER=http://localhost:5173 concurrently -k -n vite,app -c cyan,magenta \"bun run vite:dev\" \"sleep 2 && bun run ./node_modules/.bin/electrobun dev\""
+    "start": "vite build && electrobun dev",
+    "dev": "electrobun dev --watch",
+    "dev:hmr": "concurrently \"bun run hmr\" \"bun run start\"",
+    "hmr": "vite --port 5173",
+    "build": "vite build && electrobun build"
   },
   "dependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.4",

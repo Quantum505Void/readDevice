@@ -12,11 +12,13 @@ export default {
       entrypoint: "src/bun/index.ts",
     },
     copy: {
-      "renderer-dist": "views/mainview",
+      "dist/index.html": "views/mainview/index.html",
+      "dist/assets": "views/mainview/assets",
       "tray-icon.svg": "views/mainview/tray-icon.svg",
       "tray-icon.png": "views/mainview/tray-icon.png",
       "icon.png": "views/mainview/icon.png",
     },
+    watchIgnore: ["dist/**"],
     platforms: {
       linux: {
         icon: "icon.png",

@@ -1,6 +1,6 @@
 # Node / Bun
 node_modules/
-renderer-dist/
+dist/
 build/
 bun.lockb
 
