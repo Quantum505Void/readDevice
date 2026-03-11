@@ -1,3 +1,9 @@
+# Node / Bun
+node_modules/
+src/renderer-dist/
+build/
+bun.lockb
+
 # 忽略构建输出
 zig-cache/
 .zig-cache/
