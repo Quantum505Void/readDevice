@@ -4,7 +4,7 @@ export default {
   app: {
     name: "HID Device Reader",
     identifier: "com.waasstt.read-device",
-    version: "1.0.0",
+    version: "1.1.0",
     description: "HID 设备 EEPROM 读取工具",
   },
   build: {
@@ -20,7 +20,7 @@ export default {
       "99-usb-hid.rules": "99-usb-hid.rules",
     },
     asarUnpack: ["*.node", "*.dll", "*.dylib", "*.so", "*.so.*"],
-    watchIgnore: ["dist/**"],
+    watchIgnore: ["dist/**", "build/**"],
     platforms: {
       mac: {
         icons: "icon.iconset",

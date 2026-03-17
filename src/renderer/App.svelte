@@ -266,7 +266,7 @@
     background: #0d0d12;
     color: #e2e3ea;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
-    height: 100vh;
+    height: 100%;
     overflow: hidden;
   }
 
@@ -275,7 +275,7 @@
   :global(::-webkit-scrollbar-thumb) { background: #2a2b36; border-radius: 3px; }
   :global(::-webkit-scrollbar-thumb:hover) { background: #3a3b48; }
 
-  .shell { display: flex; flex-direction: column; height: 100vh; }
+  .shell { display: flex; flex-direction: column; height: 100%; }
 
   /* ── 顶栏 ── */
   .topbar {
