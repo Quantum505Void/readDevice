@@ -55,14 +55,19 @@ export function getBusInfo(path?: string, serial?: string): { label: string; isB
     if (info) return info;
   }
 
-  // Fallback: MAC 地址格式 serial → 蓝牙
-  if (serial && MAC_PATTERN.test(serial.trim())) {
+  const lp = (path ?? "").toLowerCase();
+
+  // Windows: BT HID Service UUID 在 path 里
+  // 例：\\?\HID#{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&...
+  if (lp.includes("00001812-0000-1000-8000-00805f9b34fb")) {
     return { label: "Bluetooth", isBluetooth: true };
   }
-
-  // Fallback: 路径关键词
-  const lp = (path ?? "").toLowerCase();
-  if (lp.includes("bluetooth") || lp.includes("bth") || lp.includes("rfcomm") || lp.includes("00001124")) {
+  // 路径关键词（macOS/Linux fallback）
+  if (lp.includes("bluetooth") || lp.includes("bth") || lp.includes("rfcomm")) {
+    return { label: "Bluetooth", isBluetooth: true };
+  }
+  // Fallback: MAC 地址格式 serial
+  if (serial && MAC_PATTERN.test(serial.trim())) {
     return { label: "Bluetooth", isBluetooth: true };
   }
 
