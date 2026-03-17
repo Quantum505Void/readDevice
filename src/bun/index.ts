@@ -3,6 +3,7 @@ import type { AppRPCType, HIDDevice, WhitelistDevice, DeviceMode } from "../shar
 import { join } from "path";
 import net from "net";
 import fs from "fs";
+import { getBusInfo, getDedupeKey } from "./hid-bus";
 
 const { showNotification, paths, quit } = Utils;
 
@@ -77,10 +78,8 @@ const VENDOR_NAMES: Record<number, string> = {
   0x30fa: "Shenzhen Jingli",
 };
 
-function isBT(dev: Record<string, unknown>): boolean {
-  if (dev.busType === 2) return true;
-  const p = typeof dev.path === "string" ? dev.path.toLowerCase() : "";
-  return p.includes("bluetooth") || p.includes("bth");
+function isBT(path?: string, serial?: string): boolean {
+  return getBusInfo(path, serial).isBluetooth;
 }
 
 function vendor(dev: Record<string, unknown>): string {
@@ -89,13 +88,14 @@ function vendor(dev: Record<string, unknown>): string {
 }
 
 function buildRawInfo(dev: Record<string, unknown>): string {
+  const bt = isBT(dev.path as string, dev.serialNumber as string);
   return [
     `供应商ID (VID): ${((dev.vendorId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase()}`,
     `产品ID (PID): ${((dev.productId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase()}`,
     `制造商: ${vendor(dev)}`,
     `产品名称: ${dev.product ?? "未知"}`,
     `序列号: ${dev.serialNumber ?? "N/A"}`,
-    `连接方式: ${isBT(dev) ? "蓝牙HID设备" : "USB有线连接"}`,
+    `连接方式: ${bt ? "蓝牙HID设备" : "USB有线连接"}`,
     `设备路径: ${dev.path ?? "N/A"}`,
     `HID使用页: 0x${((dev.usagePage as number) ?? 0).toString(16).padStart(4, "0").toUpperCase()}`,
     `HID使用ID: 0x${((dev.usage as number) ?? 0).toString(16).padStart(4, "0").toUpperCase()}`,
@@ -119,17 +119,18 @@ async function scanDevices(): Promise<HIDDevice[]> {
   const hid = await loadHID();
   if (!hid) return [];
 
-  // 按 vid:pid:serial:isBT 分组，同一物理设备的多个接口合并
+  // 改为 async，不阻塞主线程
+  const allDevs = await hid.devicesAsync() as Record<string, unknown>[];
+
+  // 按 dedup key 分组，同一物理设备多 interface 合并
   const groups = new Map<string, Record<string, unknown>[]>();
-  for (const dev of hid.devices() as Record<string, unknown>[]) {
-    const vid = ((dev.vendorId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase();
-    const pid = ((dev.productId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase();
-    if (vid === "0000" && pid === "0000") continue;
-    const serial = (dev.serialNumber as string)?.trim() || "N/A";
-    const bt = isBT(dev) ? "bt" : "usb";
-    const groupKey = `${vid}:${pid}:${serial}:${bt}`;
-    if (!groups.has(groupKey)) groups.set(groupKey, []);
-    groups.get(groupKey)!.push(dev);
+  for (const dev of allDevs) {
+    const vid = (dev.vendorId as number) ?? 0;
+    const pid = (dev.productId as number) ?? 0;
+    if (!vid && !pid) continue;
+    const key = getDedupeKey(vid, pid, dev.serialNumber as string, dev.path as string);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(dev);
   }
 
   const result: HIDDevice[] = [];
@@ -139,12 +140,13 @@ async function scanDevices(): Promise<HIDDevice[]> {
     const pid = ((best.productId as number) ?? 0).toString(16).padStart(4, "0").toUpperCase();
     const serial = (best.serialNumber as string)?.trim() || "N/A";
     const wl = findWhitelist(vid, pid);
+    const { isBluetooth } = getBusInfo(best.path as string, best.serialNumber as string);
     result.push({
       vid, pid,
       vendor: vendor(best),
       product: ((best.product as string)?.trim()) || `HID ${vid}:${pid}`,
       serial,
-      isBluetooth: isBT(best),
+      isBluetooth,
       path: (best.path as string) ?? "",
       usagePage: (best.usagePage as number) ?? 0,
       usage: (best.usage as number) ?? 0,
