@@ -1,0 +1,19 @@
+# 依赖 & 构建产物
+node_modules/
+dist/
+build/
+bun.lockb
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 日志 & 数据
+*.log
+data/
